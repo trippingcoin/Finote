@@ -4,7 +4,6 @@ import (
 	"os"
 
 	"github.com/caarlos0/env/v10"
-	_ "github.com/caarlos0/env/v10"
 	"github.com/joho/godotenv"
 	"github.com/rs/zerolog/log"
 )

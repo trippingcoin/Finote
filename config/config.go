@@ -9,11 +9,13 @@ type Config struct {
 	InternalToken   string        `env:"INTERNAL_TOKEN" envDefault:"local-development-token"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 
-	DB struct {
-		DSN             string        `env:"DB_DSN" envDefault:"postgres://"`
-		MaxOpenConns    int           `env:"DB_MAX_OPEN_CONNS" envDefault:"25"`
-		MinIdleConns    int           `env:"DB_MIN_IDLE_CONNS" envDefault:"2"`
-		ConnMaxLifetime time.Duration `env:"DB_CONN_MAX_LIFETIME" envDefault:"30m"`
-		ConnMaxIdleTime time.Duration `env:"DB_CONN_MAX_IDLE_TIME" envDefault:"5m"`
-	}
+	DB DBConfig `envPrefix:"DB_"`
+}
+
+type DBConfig struct {
+	DSN             string        `env:"DSN" envDefault:"postgres://finote:finote@localhost:7432/finote?sslmode=disable"`
+	MaxOpenConns    int           `env:"MAX_OPEN_CONNS" envDefault:"25"`
+	MinIdleConns    int           `env:"MIN_IDLE_CONNS" envDefault:"2"`
+	ConnMaxLifetime time.Duration `env:"CONN_MAX_LIFETIME" envDefault:"30m"`
+	ConnMaxIdleTime time.Duration `env:"CONN_MAX_IDLE_TIME" envDefault:"5m"`
 }

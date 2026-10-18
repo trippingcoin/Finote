@@ -1,13 +1,13 @@
 services:
   postgres:
-    image: postgres:latest
-    container_name: shop-postgres
+    image: postgres:16-alpine
+    container_name: finote-postgres
     environment:
-      POSTGRES_DB: shop
-      POSTGRES_USER: shop
-      POSTGRES_PASSWORD: shop
+      POSTGRES_DB: finote
+      POSTGRES_USER: finote
+      POSTGRES_PASSWORD: finote
     ports:
-      - "5432:5432"
+      - "7432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
