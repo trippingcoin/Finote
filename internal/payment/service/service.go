@@ -56,6 +56,14 @@ func (s *Service) CreatePayment(ctx context.Context, body model.Payment) (model.
 	return payment, nil
 }
 
+func (s *Service) GetPayment(ctx context.Context, id string) (model.Payment, error) {
+	payment, err := s.repo.GetPayment(ctx, id)
+	if err != nil {
+		return model.Payment{}, fmt.Errorf("get payment: %w", err)
+	}
+	return payment, nil
+}
+
 func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

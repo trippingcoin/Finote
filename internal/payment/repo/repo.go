@@ -41,3 +41,24 @@ RETURNING id, user_id, category, amount, comment, spent_at, created_at, updated_
 	)
 	return payment, err
 }
+
+func (r *Repo) GetPayment(ctx context.Context, id string) (model.Payment, error) {
+	const query = `
+		SELECT id, user_id, category, amount, comment, spent_at, created_at, updated_at
+		FROM payments
+		WHERE id = $1
+	`
+
+	var payment model.Payment
+	err := r.db.QueryRowContext(ctx, query, id).Scan(
+		&payment.ID,
+		&payment.UserID,
+		&payment.Category,
+		&payment.Amount,
+		&payment.Comment,
+		&payment.SpentAt,
+		&payment.CreatedAt,
+		&payment.UpdatedAt,
+	)
+	return payment, err
+}
