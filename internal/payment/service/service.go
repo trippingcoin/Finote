@@ -84,6 +84,18 @@ func (s *Service) UpdatePayment(ctx context.Context, id string, body model.Payme
 	return result, nil
 }
 
+func (s *Service) DeletePayment(ctx context.Context, id string) error {
+	_, err := s.repo.GetPayment(ctx, id)
+	if err != nil {
+		return fmt.Errorf("get payment: %w", err)
+	}
+	err = s.repo.DeletePayment(ctx, id)
+	if err != nil {
+		return fmt.Errorf("delete payment: %w", err)
+	}
+	return nil
+}
+
 func newUUID() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {

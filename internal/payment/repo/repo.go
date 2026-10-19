@@ -100,3 +100,9 @@ func (r *Repo) UpdatePayment(ctx context.Context, id string, body model.UpdatePa
 
 	return payment, err
 }
+
+func (r *Repo) DeletePayment(ctx context.Context, id string) error {
+	const query = `DELETE FROM payments WHERE id = $1`
+	_, err := r.db.ExecContext(ctx, query, id)
+	return err
+}

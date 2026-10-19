@@ -16,6 +16,7 @@ func New(service *service.Service) *Handler {
 	h.mux.HandleFunc("POST /v1/payments", h.createPayment)
 	h.mux.HandleFunc("GET /v1/payments", h.getPayment)
 	h.mux.HandleFunc("PUT /v1/payments/{id}", h.updatePayment)
+	h.mux.HandleFunc("DELETE /v1/payments/{id}", h.deletePayment)
 	return h
 }
 
@@ -67,4 +68,14 @@ func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
+}
+
+func (h *Handler) deletePayment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	err := h.service.DeletePayment(r.Context(), id)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusNoContent, nil)
 }
