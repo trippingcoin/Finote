@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"finote/internal/payment/model"
+	"time"
 )
 
 type Repo struct {
@@ -60,5 +61,42 @@ func (r *Repo) GetPayment(ctx context.Context, id string) (model.Payment, error)
 		&payment.CreatedAt,
 		&payment.UpdatedAt,
 	)
+	return payment, err
+}
+
+func (r *Repo) UpdatePayment(ctx context.Context, id string, body model.UpdatePayment, updatedAt time.Time) (model.Payment, error) {
+	const query = `
+		UPDATE payments
+		SET category = COALESCE($2, category),
+		    amount = COALESCE($3, amount),
+		    comment = COALESCE($4, comment),
+		    spent_at = COALESCE($5, spent_at),
+		    updated_at = $6
+		WHERE id = $1
+		RETURNING id, user_id, category, amount, comment,
+		          spent_at, created_at, updated_at
+	`
+
+	var payment model.Payment
+	err := r.db.QueryRowContext(
+		ctx,
+		query,
+		id,
+		body.Category,
+		body.Amount,
+		body.Comment,
+		body.SpentAt,
+		updatedAt,
+	).Scan(
+		&payment.ID,
+		&payment.UserID,
+		&payment.Category,
+		&payment.Amount,
+		&payment.Comment,
+		&payment.SpentAt,
+		&payment.CreatedAt,
+		&payment.UpdatedAt,
+	)
+
 	return payment, err
 }

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"finote/internal/payment/model"
 	"finote/internal/payment/service"
 	"net/http"
@@ -16,6 +15,7 @@ func New(service *service.Service) *Handler {
 	h := &Handler{service: service, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/payments", h.createPayment)
 	h.mux.HandleFunc("GET /v1/payments", h.getPayment)
+	h.mux.HandleFunc("PUT /v1/payments/{id}", h.updatePayment)
 	return h
 }
 
@@ -53,8 +53,18 @@ func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, payment)
 }
 
-func writeJSON(w http.ResponseWriter, status int, body any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(body)
+func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var body model.Payment
+	if err := decodeJSON(w, r, &body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	payment, err := h.service.UpdatePayment(r.Context(), id, body)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, payment)
 }

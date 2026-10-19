@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 )
 
@@ -21,4 +22,14 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, target any) error {
 		return errors.New("request body must contain exactly one JSON object")
 	}
 	return nil
+}
+
+func writeJSON(w http.ResponseWriter, status int, body any) {
+	w.Header().Set("Content-Type", "application/json")
+
+	w.WriteHeader(status)
+
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		log.Printf("encode JSON response: %v", err)
+	}
 }

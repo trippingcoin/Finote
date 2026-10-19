@@ -12,3 +12,10 @@ type Payment struct {
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
+
+type UpdatePayment struct {
+	Category *string    `json:"category"`
+	Amount   *float64   `json:"amount"`
+	Comment  *string    `json:"comment"`
+	SpentAt  *time.Time `json:"spent_at"`
+}
