@@ -7,7 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -112,7 +112,7 @@ func (b *Bot) Run(ctx context.Context) error {
 			if errors.As(err, &api) && (api.Code == 401 || api.Code == 409) {
 				return err
 			}
-			log.Printf("Telegram polling: %v", err)
+			slog.WarnContext(ctx, "Telegram polling failed", "error", err)
 			select {
 			case <-ctx.Done():
 				return nil
@@ -133,7 +133,7 @@ func (b *Bot) Run(ctx context.Context) error {
 					parsed, err := b.planner.Plan(planCtx, text, time.Now().In(b.location))
 					cancel()
 					if err != nil {
-						log.Printf("Telegram: failed to parse expense request: %v", err)
+						slog.WarnContext(ctx, "Telegram: failed to parse expense request", "error", err, "update_id", u.ID)
 						intent.Question = "Не удалось разобрать запрос. Укажите действие, сумму и описание; если ошибка повторяется, попробуйте позже."
 					} else {
 						intent = parsed
@@ -159,7 +159,7 @@ func (b *Bot) Run(ctx context.Context) error {
 					if errors.As(err, &api) && api.Code == 401 {
 						return err
 					}
-					log.Print("Telegram: retrying reply delivery")
+					slog.WarnContext(ctx, "Telegram: retrying reply delivery", "error", err, "update_id", u.ID)
 					select {
 					case <-ctx.Done():
 						return nil

@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net/http"
 )
 
@@ -30,6 +30,6 @@ func writeJSON(w http.ResponseWriter, status int, body any) {
 	w.WriteHeader(status)
 
 	if err := json.NewEncoder(w).Encode(body); err != nil {
-		log.Printf("encode JSON response: %v", err)
+		slog.Error("encode JSON response failed", "error", err)
 	}
 }

@@ -1,22 +1,22 @@
 package env
 
 import (
+	"log/slog"
 	"os"
 
 	"github.com/caarlos0/env/v10"
 	"github.com/joho/godotenv"
-	"github.com/rs/zerolog/log"
 )
 
 func Load(target interface{}) error {
 	if _, err := os.Stat(".env"); err == nil {
 		if err := godotenv.Load(); err != nil {
-			log.Warn().Err(err).Msg("failed to load .env file")
+			slog.Warn("failed to load .env file", "error", err)
 		} else {
-			log.Info().Msg(".env file loaded")
+			slog.Info(".env file loaded")
 		}
 	} else {
-		log.Info().Msg(".env file not found, using system env variables...")
+		slog.Info(".env file not found, using system env variables...")
 	}
 
 	if err := env.Parse(target); err != nil {
