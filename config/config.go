@@ -9,7 +9,20 @@ type Config struct {
 	InternalToken   string        `env:"INTERNAL_TOKEN" envDefault:"local-development-token"`
 	ShutdownTimeout time.Duration `env:"SHUTDOWN_TIMEOUT" envDefault:"10s"`
 
-	DB DBConfig `envPrefix:"DB_"`
+	DB       DBConfig       `envPrefix:"DB_"`
+	Telegram TelegramConfig `envPrefix:"TELEGRAM_"`
+	LLM      LLMConfig      `envPrefix:"LLM_"`
+}
+
+type TelegramConfig struct {
+	Token    string `env:"BOT_TOKEN"`
+	Timezone string `env:"TIMEZONE" envDefault:"Asia/Almaty"`
+}
+
+type LLMConfig struct {
+	BaseURL string `env:"BASE_URL"`
+	APIKey  string `env:"API_KEY"`
+	Model   string `env:"MODEL"`
 }
 
 type DBConfig struct {

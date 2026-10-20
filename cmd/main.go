@@ -1,15 +1,23 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"finote/config"
 	"finote/internal/infrastucture/db"
 	"finote/internal/payment/httpapi"
 	"finote/internal/payment/repo"
 	"finote/internal/payment/service"
+	"finote/internal/telegram"
 	"finote/utils/env"
 	"fmt"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+	_ "time/tzdata"
 )
 
 func main() {
@@ -38,10 +46,51 @@ func main() {
 		log.Fatalf("create payments table: %v", err)
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	var bot *telegram.Bot
+	if cfg.Telegram.Token != "" {
+		location, err := time.LoadLocation(cfg.Telegram.Timezone)
+		if err != nil {
+			log.Fatalf("telegram timezone: %v", err)
+		}
+		agent, err := telegram.NewAgent(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
+		if err != nil {
+			log.Fatal(err)
+		}
+		bot, err = telegram.NewBot(cfg.Telegram.Token, agent, telegram.NewStore(database, location), location)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	handler := httpapi.New(service.New(repo.New(database)))
 	address := fmt.Sprintf(":%d", cfg.Port)
 	log.Printf("payment API listening on %s", address)
-	if err := http.ListenAndServe(address, handler); err != nil {
-		log.Fatalf("serve HTTP: %v", err)
+	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	failures := make(chan error, 2)
+	go func() { failures <- server.ListenAndServe() }()
+	botDone := make(chan struct{})
+	if bot != nil {
+		go func() { defer close(botDone); failures <- bot.Run(ctx) }()
+	} else {
+		close(botDone)
+		log.Print("Telegram disabled: TELEGRAM_BOT_TOKEN is empty")
+	}
+	select {
+	case <-ctx.Done():
+	case err := <-failures:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("application stopped: %v", err)
+		}
+	}
+	stop()
+	shutdown, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(shutdown); err != nil {
+		log.Printf("HTTP shutdown: %v", err)
+	}
+	select {
+	case <-botDone:
+	case <-shutdown.Done():
 	}
 }
