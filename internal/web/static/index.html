@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Finote — расходы семьи</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#main">Перейти к расходам</a>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Finote — главная"><span class="brand-mark" aria-hidden="true">f.</span>finote<span class="brand-dot">/</span></a>
+    <span class="topbar-note">Семейный учёт расходов</span>
+    <span class="workspace">Панель семьи</span>
+  </header>
+  <main id="main" tabindex="-1">
+    <section class="heading">
+      <div><p class="eyebrow">Общий взгляд на повседневное</p><h1>Расходы семьи<span>.</span></h1><p class="intro">Все траты в одном месте. Из Telegram и добавленные вручную.</p></div>
+      <button class="primary" id="add"><span aria-hidden="true">+</span> Добавить расход</button>
+    </section>
+
+    <section class="overview" aria-label="Итоги выбранного периода" aria-busy="true" id="overview">
+      <div class="total-card">
+        <div class="total-label"><span>Расходы по фильтрам</span><span class="currency-label">KZT</span></div>
+        <p class="total-value" id="total-amount">—</p>
+        <p class="total-period" id="period-label">Загружаем данные</p>
+      </div>
+      <div class="metric"><span class="metric-label">Записей о расходах</span><strong id="total-count">—</strong><span class="metric-note">За выбранный период</span></div>
+      <div class="metric"><span class="metric-label">Участников</span><strong id="total-members">—</strong><span class="metric-note">С расходами по фильтрам</span></div>
+    </section>
+
+    <section class="ledger" aria-labelledby="ledger-title">
+      <div class="ledger-heading"><div><p class="eyebrow">История</p><h2 id="ledger-title">Все расходы</h2></div><button class="quiet" id="refresh">Обновить</button></div>
+      <form id="filters" class="filters">
+        <label>Участник<select id="filter-user" name="user_id"><option value="">Все участники</option></select></label>
+        <label>Категория<select id="filter-category" name="category"><option value="">Все категории</option></select></label>
+        <label>Период<select id="period"><option value="month">Этот месяц</option><option value="all">За всё время</option><option value="custom">Выбрать даты</option></select></label>
+        <label>С даты<input type="date" id="from" name="from" min="1900-01-01" max="9999-12-31"></label>
+        <label>По дату<input type="date" id="to" name="to" min="1900-01-01" max="9999-12-31"></label>
+        <button class="quiet reset" type="button" id="reset">Сбросить</button>
+      </form>
+      <p id="filter-error" class="inline-error" role="alert" hidden></p>
+      <p id="users-warning" class="hint" hidden>Список участников не загрузился. Нажмите «Обновить», чтобы повторить.</p>
+      <div id="loading" class="state" role="status"><span class="loader" aria-hidden="true"></span><h3>Загружаем расходы</h3><p>Собираем записи и считаем итог.</p></div>
+      <div id="error-state" class="state" role="alert" hidden><span class="state-mark" aria-hidden="true">!</span><h3>Не удалось загрузить расходы</h3><p id="load-error">Проверьте соединение и попробуйте ещё раз.</p><button class="secondary" id="retry">Повторить</button></div>
+      <div id="empty" class="state" hidden><span class="state-mark" aria-hidden="true">—</span><h3>Здесь пока нет расходов</h3><p>Добавьте первую трату или измените выбранные фильтры.</p><button class="secondary" id="empty-add">Добавить расход</button></div>
+      <div class="table-wrap" id="table-wrap" hidden>
+        <table>
+          <caption class="sr-only">Расходы семьи по выбранным фильтрам</caption>
+          <thead><tr><th scope="col">Расход / категория</th><th scope="col">Участник</th><th scope="col">Дата</th><th scope="col" class="number">Сумма</th><th scope="col"><span class="sr-only">Действия</span></th></tr></thead>
+          <tbody id="rows"></tbody>
+        </table>
+      </div>
+      <footer class="pagination"><p id="page-label" role="status">Загрузка…</p><div><button class="page-button" id="previous" aria-label="Предыдущая страница" disabled>Назад</button><button class="page-button" id="next" aria-label="Следующая страница" disabled>Далее</button></div></footer>
+    </section>
+    <footer class="page-footer"><span>Finote / Меньше рутины, больше ясности.</span><span>Даты по времени Алматы · Валюта: тенге</span></footer>
+  </main>
+
+  <dialog id="editor" aria-labelledby="editor-title" aria-describedby="editor-help">
+    <form id="payment-form">
+      <div class="dialog-top"><p class="eyebrow">Запись о расходе</p><button type="button" class="close" id="close-editor" aria-label="Закрыть">×</button></div>
+      <h2 id="editor-title">Новый расход</h2><p id="editor-help" class="dialog-help">Заполните детали — запись появится в общей истории.</p>
+      <label>Участник · Telegram ID<input id="payment-user" name="user" type="text" inputmode="numeric" pattern="[1-9][0-9]*" maxlength="19" list="known-users" placeholder="Например, 123456789" required autocomplete="off"><span class="hint" id="owner-hint">Введите ID или выберите участника из списка.</span></label>
+      <datalist id="known-users"></datalist>
+      <div class="form-grid">
+        <label>Сумма, ₸<input id="payment-amount" name="amount" type="number" min="0.01" max="999999999999.99" step="0.01" placeholder="0,00" required></label>
+        <label>Дата расхода<input id="payment-date" name="date" type="date" min="1900-01-01" max="9999-12-31" required></label>
+      </div>
+      <label>Категория<select id="payment-category" name="category" required><option value="" disabled selected>Выберите категорию</option></select></label>
+      <label>Комментарий <span class="optional">необязательно</span><textarea id="payment-comment" name="comment" rows="3" maxlength="500" placeholder="Например, кофе по дороге на работу"></textarea></label>
+      <p id="save-error" class="inline-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="quiet" id="cancel-editor">Отмена</button><button class="primary" id="save" type="submit">Добавить расход</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-help">
+    <div class="dialog-top"><p class="eyebrow">Удаление записи</p><button class="close" id="close-delete" aria-label="Закрыть">×</button></div>
+    <h2 id="delete-title">Удалить расход?</h2><p id="delete-help" class="dialog-help">Запись исчезнет из панели и Telegram. Отменить удаление нельзя.</p>
+    <div class="delete-summary"><strong id="delete-description"></strong><span id="delete-amount"></span></div>
+    <p id="delete-error" class="inline-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button class="quiet" id="cancel-delete" autofocus>Оставить</button><button class="danger" id="confirm-delete">Удалить расход</button></div>
+  </dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <noscript><p class="noscript">Для работы панели включите JavaScript в браузере.</p></noscript>
+</body>
+</html>

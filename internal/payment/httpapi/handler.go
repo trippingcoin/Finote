@@ -3,6 +3,7 @@ package httpapi
 import (
 	"finote/internal/payment/model"
 	"finote/internal/payment/service"
+	"finote/internal/web"
 	"net/http"
 )
 
@@ -14,9 +15,13 @@ type Handler struct {
 func New(service *service.Service) *Handler {
 	h := &Handler{service: service, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/payments", h.createPayment)
-	h.mux.HandleFunc("GET /v1/payments", h.getPayment)
+	h.mux.HandleFunc("GET /v1/payments", h.listPayments)
+	h.mux.HandleFunc("GET /v1/payments/{id}", h.getPayment)
+	h.mux.HandleFunc("GET /v1/users", h.listUsers)
+	h.mux.HandleFunc("PATCH /v1/payments/{id}", h.patchPayment)
 	h.mux.HandleFunc("PUT /v1/payments/{id}", h.updatePayment)
 	h.mux.HandleFunc("DELETE /v1/payments/{id}", h.deletePayment)
+	h.mux.Handle("GET /", web.Handler())
 	return h
 }
 
@@ -33,22 +38,20 @@ func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
 
 	payment, err := h.service.CreatePayment(r.Context(), body)
 	if err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, payment)
 }
 
 func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
-	var body model.Payment
-	if err := decodeJSON(w, r, &body); err != nil {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	id := r.PathValue("id")
+	if !validID(w, id) {
 		return
 	}
-
-	payment, err := h.service.GetPayment(r.Context(), body.ID)
+	payment, err := h.service.GetPayment(r.Context(), id)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
@@ -56,6 +59,9 @@ func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	if !validID(w, id) {
+		return
+	}
 	var body model.Payment
 	if err := decodeJSON(w, r, &body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -64,7 +70,7 @@ func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
 
 	payment, err := h.service.UpdatePayment(r.Context(), id, body)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+		respondError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
@@ -72,10 +78,13 @@ func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) deletePayment(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	err := h.service.DeletePayment(r.Context(), id)
-	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
+	if !validID(w, id) {
 		return
 	}
-	writeJSON(w, http.StatusNoContent, nil)
+	err := h.service.DeletePayment(r.Context(), id)
+	if err != nil {
+		respondError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }

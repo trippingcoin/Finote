@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"errors"
 	"finote/internal/payment/model"
 	"finote/internal/payment/repo"
 	"fmt"
@@ -26,19 +25,17 @@ func New(repo *repo.Repo) *Service {
 }
 
 func (s *Service) CreatePayment(ctx context.Context, body model.Payment) (model.Payment, error) {
-	if body.UserID == "" {
-		return model.Payment{}, errors.New("user_id is required")
-	}
-	if body.Amount <= 0 {
-		return model.Payment{}, errors.New("amount must be greater than zero")
-	}
-	if _, ok := categories[body.Category]; !ok {
-		return model.Payment{}, errors.New("invalid category")
+	body = normalizePayment(body)
+	if err := validatePayment(body); err != nil {
+		return model.Payment{}, err
 	}
 
 	now := s.newTime().UTC()
 	if body.SpentAt.IsZero() {
 		body.SpentAt = now
+	}
+	if body.SpentAt.Year() < 1900 || body.SpentAt.Year() > 9999 {
+		return model.Payment{}, invalid("Укажите корректную дату.")
 	}
 	body.CreatedAt = now
 	body.UpdatedAt = now
@@ -76,7 +73,7 @@ func (s *Service) UpdatePayment(ctx context.Context, id string, body model.Payme
 		Comment:  &body.Comment,
 		SpentAt:  &body.SpentAt,
 	}
-	result, err := s.repo.UpdatePayment(ctx, id, updatePayment, s.newTime().UTC())
+	result, err := s.PatchPayment(ctx, id, updatePayment)
 	if err != nil {
 		return model.Payment{}, fmt.Errorf("update payment: %w", err)
 	}
