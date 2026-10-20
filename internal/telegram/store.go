@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -107,14 +108,14 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) 
 		if err != nil {
 			return "", err
 		}
-		return "Добавлено: " + s.describe(p), nil
+		return "Расход добавлен\n\n" + s.describe(p), nil
 	}
 	where, args := s.filter(user, i)
 	if i.Action == "sum" {
 		var total string
 		var count int64
 		err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0)::text,COUNT(*) FROM payments WHERE "+where, args...).Scan(&total, &count)
-		return fmt.Sprintf("Сумма: %s. Трат: %d.", total, count), err
+		return fmt.Sprintf("Сумма расходов: %s ₸\nТрат: %d", total, count), err
 	}
 	limit := 11
 	if i.Latest {
@@ -145,14 +146,20 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) 
 	if i.Action == "list" || len(found) > 1 {
 		var out strings.Builder
 		if i.Action != "list" {
-			out.WriteString("Найдено несколько трат. Повторите запрос с ID нужной записи.\n")
+			out.WriteString("Найдено несколько трат. Повторите запрос с ID нужной записи.\n\n")
+		} else {
+			out.WriteString("Ваши расходы\n\n")
 		}
 		for n, p := range found {
 			if n == 10 {
 				out.WriteString("Есть ещё записи — уточните период или описание.\n")
 				break
 			}
-			out.WriteString(s.describe(p) + "\n")
+			fmt.Fprintf(&out, "%d. %s", n+1, s.describe(p))
+			if i.Action != "list" {
+				fmt.Fprintf(&out, "\nID: %s", p.ID)
+			}
+			out.WriteString("\n\n")
 		}
 		return out.String(), nil
 	}
@@ -170,7 +177,7 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) 
 		if n == 0 {
 			return "Трата уже удалена.", nil
 		}
-		return "Удалено: " + s.describe(found[0]), nil
+		return "Расход удалён\n\n" + s.describe(found[0]), nil
 	}
 	var spent *time.Time
 	if i.SpentAt != nil {
@@ -187,7 +194,7 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) 
 	if err != nil {
 		return "", err
 	}
-	return "Обновлено: " + s.describe(p), nil
+	return "Расход обновлён\n\n" + s.describe(p), nil
 }
 
 func (s *Store) filter(user string, i Intent) (string, []any) {
@@ -218,7 +225,13 @@ func (s *Store) filter(user string, i Intent) (string, []any) {
 }
 
 func (s *Store) describe(p model.Payment) string {
-	return fmt.Sprintf("%.2f · %s · %s · %s\nID: %s", p.Amount, p.Category, p.SpentAt.In(s.location).Format("02.01.2006"), trim(p.Comment, 100), p.ID)
+	description := strings.Join(strings.Fields(p.Comment), " ")
+	if description == "" {
+		description = "Без описания"
+	}
+	return fmt.Sprintf("%s\nСумма: %s ₸\nКатегория: %s\nДата: %s",
+		trim(description, 100), strconv.FormatFloat(p.Amount, 'f', -1, 64),
+		p.Category, p.SpentAt.In(s.location).Format("02.01.2006"))
 }
 func trim(s string, n int) string {
 	r := []rune(s)
