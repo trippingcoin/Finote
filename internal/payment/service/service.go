@@ -62,11 +62,6 @@ func (s *Service) GetPayment(ctx context.Context, id string) (model.Payment, err
 }
 
 func (s *Service) UpdatePayment(ctx context.Context, id string, body model.Payment) (model.Payment, error) {
-	_, err := s.repo.GetPayment(ctx, id)
-	if err != nil {
-		return model.Payment{}, fmt.Errorf("get payment: %w", err)
-	}
-
 	updatePayment := model.UpdatePayment{
 		Category: &body.Category,
 		Amount:   &body.Amount,

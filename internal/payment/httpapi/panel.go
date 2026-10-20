@@ -69,7 +69,7 @@ func parseFilter(r *http.Request) (model.Filter, error) {
 	for _, key := range []string{"from", "to"} {
 		if value := q.Get(key); value != "" {
 			date, err := time.ParseInLocation("2006-01-02", value, loc)
-			if err != nil {
+			if err != nil || date.Year() < 1 {
 				return f, bad
 			}
 			if key == "from" {

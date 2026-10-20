@@ -20,7 +20,10 @@ func validateAmount(amount float64) error {
 	if math.IsNaN(amount) || math.IsInf(amount, 0) || amount < 0.01 || amount >= 1e12 {
 		return invalid("Сумма должна быть от 0,01 до 999 999 999 999,99.")
 	}
-	if math.Abs(amount*100-math.Round(amount*100)) > 0.001 {
+	// Inspect the shortest decimal representation instead of accepting a rounding
+	// tolerance that silently lets amounts such as 1.000001 reach NUMERIC(14,2).
+	decimal := strconv.FormatFloat(amount, 'f', -1, 64)
+	if dot := strings.IndexByte(decimal, '.'); dot >= 0 && len(decimal)-dot-1 > 2 {
 		return invalid("Укажите не более двух знаков после запятой.")
 	}
 	return nil
