@@ -25,6 +25,13 @@ func (s *Store) Init(ctx context.Context) error {
  bot_id TEXT NOT NULL, update_id BIGINT NOT NULL, response TEXT NOT NULL,
  PRIMARY KEY (bot_id, update_id)
  )`)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS telegram_dialogs (
+ bot_id TEXT NOT NULL, user_id TEXT NOT NULL, payload JSONB NOT NULL,
+ expires_at TIMESTAMPTZ NOT NULL, PRIMARY KEY(bot_id,user_id)
+ )`)
 	return err
 }
 
@@ -59,7 +66,21 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
 	}
-	reply, err = s.execute(ctx, tx, user, i)
+	// Serialize a user's conversation as well as individual update delivery.
+	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "dialog:"+bot+":"+user); err != nil {
+		return "", err
+	}
+	if i.cancelDialog {
+		err = clearDialog(ctx, tx, bot, user)
+	} else if i.answer != "" {
+		i, err = s.resolveDialog(ctx, tx, bot, user, i.answer)
+	} else if i.Action != "clarify" {
+		err = clearDialog(ctx, tx, bot, user)
+	}
+	if err != nil {
+		return "", err
+	}
+	reply, err = s.execute(ctx, tx, bot, user, i)
 	if err != nil {
 		return "", err
 	}
@@ -79,7 +100,7 @@ func scanPayment(row scanner) (model.Payment, error) {
 	return p, err
 }
 
-func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) (string, error) {
+func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Intent) (string, error) {
 	if i.Action == "clarify" {
 		if i.Question == "" {
 			return "Уточните действие, сумму или нужную трату.", nil
@@ -143,22 +164,18 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, user string, i Intent) 
 	if len(found) == 0 {
 		return "Подходящих трат не найдено.", nil
 	}
-	if i.Action == "list" || len(found) > 1 {
+	if i.Action != "list" && len(found) > 1 {
+		return s.saveDialog(ctx, tx, bot, user, i, found)
+	}
+	if i.Action == "list" {
 		var out strings.Builder
-		if i.Action != "list" {
-			out.WriteString("Найдено несколько трат. Повторите запрос с ID нужной записи.\n\n")
-		} else {
-			out.WriteString("Ваши расходы\n\n")
-		}
+		out.WriteString("Ваши расходы\n\n")
 		for n, p := range found {
 			if n == 10 {
 				out.WriteString("Есть ещё записи — уточните период или описание.\n")
 				break
 			}
 			fmt.Fprintf(&out, "%d. %s", n+1, s.describe(p))
-			if i.Action != "list" {
-				fmt.Fprintf(&out, "\nID: %s", p.ID)
-			}
 			out.WriteString("\n\n")
 		}
 		return out.String(), nil

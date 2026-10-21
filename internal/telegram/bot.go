@@ -128,7 +128,19 @@ func (b *Bot) Run(ctx context.Context) error {
 			if ok {
 				text := strings.TrimSpace(u.Message.Text)
 				intent := Intent{Action: "clarify", Question: "Напишите расход, например «кофе 350», или попросите показать, изменить либо удалить свои траты."}
-				if text != "" && text != "/start" {
+				cancelDialog, newRequest := dialogControl(text)
+				pending, err := b.store.HasDialog(ctx, b.id, user)
+				if err != nil {
+					return fmt.Errorf("read Telegram dialog: %w", err)
+				}
+				if cancelDialog || newRequest {
+					intent.cancelDialog = true
+					if cancelDialog {
+						intent.Question = "Уточнение отменено. Ничего не изменено."
+					}
+				} else if pending && text != "" {
+					intent.answer = text
+				} else if text != "" {
 					planCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 					parsed, err := b.planner.Plan(planCtx, text, time.Now().In(b.location))
 					cancel()
