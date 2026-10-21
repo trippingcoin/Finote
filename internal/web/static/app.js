@@ -9,22 +9,11 @@ function calendarDate(value) {
   const p = Object.fromEntries(dayFormatter.formatToParts(new Date(value)).map(x => [x.type, x.value]));
   return p.year + '-' + p.month + '-' + p.day;
 }
-const state = { offset: 0, limit: 20, total: 0, items: [], editing: null, deleting: null, saving: false, removing: false, controller: null, toastTimer: null };
+const state = { offset: 0, limit: 20, total: 0, items: [], editing: null, deleting: null, saving: false, removing: false, saveUnknown: false, deleteUnknown: false, controller: null, toastTimer: null };
 function option(value, label) { const o = document.createElement('option'); o.value = value; o.textContent = label; return o; }
 for (const category of categories) {
   $('filter-category').append(option(category, category));
   $('payment-category').append(option(category, category));
-}
-
-async function api(path, options = {}) {
-  let response;
-  try { response = await fetch(path, { ...options, headers: { 'Content-Type': 'application/json', ...options.headers } }); }
-  catch (error) { if (error.name === 'AbortError') throw error; throw new Error('Нет связи с сервером. Проверьте подключение и попробуйте снова.'); }
-  if (response.status === 204) return null;
-  let data;
-  try { data = await response.json(); } catch { throw new Error('Сервер вернул некорректный ответ. Попробуйте обновить страницу.'); }
-  if (!response.ok) throw new Error(data.error || 'Не удалось выполнить запрос.');
-  return data;
 }
 
 function showError(id, message = '') { $(id).textContent = message; $(id).hidden = !message; }
@@ -136,6 +125,7 @@ function renderRows() {
 }
 
 function openEditor(payment = null) {
+  state.saveUnknown = false; $('save').disabled = false; $('check-save').hidden = true;
   state.editing = payment; $('payment-form').reset(); showError('save-error');
   $('editor-title').textContent = payment ? 'Редактировать расход' : 'Новый расход';
   $('editor-help').textContent = payment ? 'Изменения появятся в панели и в личных тратах участника.' : 'Заполните детали — запись появится в общей истории.';
@@ -153,7 +143,7 @@ function openEditor(payment = null) {
 function closeEditor() { if (!state.saving) $('editor').close(); }
 $('editor').addEventListener('cancel', event => { if (state.saving) event.preventDefault(); });
 $('payment-form').addEventListener('submit', async event => {
-  event.preventDefault(); if (state.saving || !$('payment-form').reportValidity()) return;
+  event.preventDefault(); if (state.saving || state.saveUnknown || !$('payment-form').reportValidity()) return;
   const amount = Number($('payment-amount').value);
   if (!Number.isFinite(amount) || amount <= 0) { showError('save-error', 'Укажите положительную сумму.'); return; }
   const original = state.editing;
@@ -167,11 +157,16 @@ $('payment-form').addEventListener('submit', async event => {
     $('editor').close(); state.offset = 0;
     notify(original ? 'Изменения сохранены.' : 'Расход добавлен. Если его нет в списке, проверьте фильтры.');
     await Promise.all([loadPayments(), loadUsers()]);
-  } catch (error) { showError('save-error', error.message); }
-  finally { state.saving = false; $('save').disabled = false; $('save').textContent = original ? 'Сохранить изменения' : 'Добавить расход'; }
+  } catch (error) {
+    state.saveUnknown = Boolean(error.unknownResult);
+    $('check-save').hidden = !state.saveUnknown;
+    showError('save-error', error.message);
+  }
+  finally { state.saving = false; $('save').disabled = state.saveUnknown; $('save').textContent = original ? 'Сохранить изменения' : 'Добавить расход'; }
 });
 
 function openDelete(payment) {
+  state.deleteUnknown = false; $('confirm-delete').disabled = false; $('check-delete').hidden = true;
   state.deleting = payment; showError('delete-error');
   $('delete-description').textContent = payment.comment || payment.category;
   $('delete-amount').textContent = money(payment.amount);
@@ -180,15 +175,28 @@ function openDelete(payment) {
 function closeDelete() { if (!state.removing) $('delete-dialog').close(); }
 $('delete-dialog').addEventListener('cancel', event => { if (state.removing) event.preventDefault(); });
 $('confirm-delete').addEventListener('click', async () => {
-  if (state.removing || !state.deleting) return;
+  if (state.removing || state.deleteUnknown || !state.deleting) return;
   state.removing = true; $('confirm-delete').disabled = true; $('confirm-delete').textContent = 'Удаляем…'; showError('delete-error');
   try {
     await api('/v1/payments/' + state.deleting.id, { method: 'DELETE' });
     $('delete-dialog').close(); notify('Расход удалён.');
     await Promise.all([loadPayments(), loadUsers()]);
-  } catch (error) { showError('delete-error', error.message); }
-  finally { state.removing = false; $('confirm-delete').disabled = false; $('confirm-delete').textContent = 'Удалить расход'; }
+  } catch (error) {
+    state.deleteUnknown = Boolean(error.unknownResult);
+    $('check-delete').hidden = !state.deleteUnknown;
+    showError('delete-error', error.message);
+  }
+  finally { state.removing = false; $('confirm-delete').disabled = state.deleteUnknown; $('confirm-delete').textContent = 'Удалить расход'; }
 });
+
+for (const [button, dialog] of [['check-save', 'editor'], ['check-delete', 'delete-dialog']]) {
+  $(button).addEventListener('click', () => {
+    $(dialog).close();
+    // A verification request only reads; clear filters that could hide the result.
+    $('filters').reset(); $('period').value = 'all'; setPeriod(); state.offset = 0;
+    loadPayments(); loadUsers();
+  });
+}
 
 for (const id of ['add','empty-add']) $(id).addEventListener('click', () => openEditor());
 for (const id of ['close-editor','cancel-editor']) $(id).addEventListener('click', closeEditor);

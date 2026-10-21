@@ -77,6 +77,9 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	}
 	if i.cancelDialog {
 		err = clearDialog(ctx, tx, bot, user)
+		if err == nil {
+			err = clearContext(ctx, tx, bot, user)
+		}
 	} else if i.answer != "" {
 		i, err = s.resolveDialog(ctx, tx, bot, user, i.answer)
 	} else if i.Action != "clarify" {
@@ -84,6 +87,12 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	}
 	if err != nil {
 		return "", err
+	}
+	if i.ListIndex > 0 || i.Selected {
+		i, err = resolveReference(ctx, tx, bot, user, i)
+		if err != nil {
+			return "", err
+		}
 	}
 	reply, err = s.execute(ctx, tx, bot, user, i)
 	if err != nil {
@@ -99,6 +108,9 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 }
 
 func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Intent) (string, error) {
+	if i.Action == "draft_create" {
+		return fmt.Sprintf("Какую сумму записать для «%s»? Ответьте числом, например «400». Уточнение действует 10 минут. /cancel — отменить.", trim(*i.Comment, 100)), saveDraft(ctx, tx, bot, user, i)
+	}
 	if i.Action == "clarify" {
 		if i.Question == "" {
 			return "Уточните действие, сумму или нужную трату.", nil
@@ -123,7 +135,7 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		if err != nil {
 			return "", err
 		}
-		return "Расход добавлен\n\n" + s.describe(p), nil
+		return "Расход добавлен\n\n" + s.describe(p), rememberSelected(ctx, tx, bot, user, p.ID)
 	}
 	filter := s.paymentFilter(i)
 	if i.Action == "sum" {
@@ -135,12 +147,26 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		return "", err
 	}
 	if len(found) == 0 {
+		if i.fromReference {
+			return "Эта трата удалена или недоступна. Попросите показать список заново.", nil
+		}
+		if i.Action == "list" {
+			return "Подходящих трат не найдено.", rememberList(ctx, tx, bot, user, nil)
+		}
 		return "Подходящих трат не найдено.", nil
 	}
 	if i.Action != "list" && len(found) > 1 {
 		return s.saveDialog(ctx, tx, bot, user, i, found)
 	}
 	if i.Action == "list" {
+		if i.fromReference {
+			err = rememberSelected(ctx, tx, bot, user, found[0].ID)
+		} else {
+			err = rememberList(ctx, tx, bot, user, found)
+		}
+		if err != nil {
+			return "", err
+		}
 		var out strings.Builder
 		out.WriteString("Ваши расходы\n\n")
 		for n, p := range found {
@@ -154,6 +180,9 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		return out.String(), nil
 	}
 	id := found[0].ID
+	if i.Action == "id" {
+		return "ID расхода: " + id + "\n\n" + s.describe(found[0]), rememberSelected(ctx, tx, bot, user, id)
+	}
 	// Owner is checked again in the actual mutation, never only in a prior SELECT.
 	if i.Action == "delete" {
 		err := payments.DeletePayment(ctx, id)
@@ -163,7 +192,15 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		if err != nil {
 			return "", err
 		}
-		return "Расход удалён\n\n" + s.describe(found[0]), nil
+		c, active, err := readContext(ctx, tx, bot, user)
+		if err != nil {
+			return "", err
+		}
+		if active && c.Selected == id {
+			c.Selected = ""
+			err = writeContext(ctx, tx, bot, user, c)
+		}
+		return "Расход удалён\n\n" + s.describe(found[0]), err
 	}
 	changes, err := i.changes()
 	if err != nil {
@@ -176,7 +213,7 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 	if err != nil {
 		return "", err
 	}
-	return "Расход обновлён\n\n" + s.describe(p), nil
+	return "Расход обновлён\n\n" + s.describe(p), rememberSelected(ctx, tx, bot, user, p.ID)
 }
 
 func (s *Store) paymentFilter(i Intent) model.Filter {

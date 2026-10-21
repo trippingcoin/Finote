@@ -76,6 +76,19 @@ func (s *Store) resolveDialog(ctx context.Context, tx *sql.Tx, bot, user, answer
 	if err = json.Unmarshal(raw, &pending); err != nil {
 		return Intent{}, err
 	}
+	if pending.Intent.Action == "draft_create" {
+		amount, ok := parseAmount(answer)
+		if !ok {
+			return clarify("Укажите сумму числом, например «400» или «400,50». Для нового запроса напишите «отмена»."), nil
+		}
+		i := pending.Intent
+		i.Action = "create"
+		i.Amount = &amount
+		if err = validate(i); err != nil {
+			return clarify("Сумма должна быть положительной, не более двух знаков после запятой."), nil
+		}
+		return i, clearDialog(ctx, tx, bot, user)
+	}
 	selected := selectChoices(answer, pending.Choices, time.Now().In(s.location), s.location)
 	if len(selected) != 1 {
 		return clarify("Не удалось однозначно выбрать трату. Ничего не изменено. Ответьте номером из списка, датой или суммой. /cancel — отменить, /new — новый запрос."), nil
@@ -141,7 +154,7 @@ func dialogControl(text string) (cancel, newRequest bool) {
 	switch strings.ToLower(strings.TrimSpace(text)) {
 	case "/cancel", "отмена", "отмени":
 		return true, false
-	case "/start", "/new":
+	case "/start", "/new", "новый запрос":
 		return false, true
 	}
 	return false, false

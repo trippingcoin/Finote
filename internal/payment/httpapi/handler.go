@@ -5,11 +5,13 @@ import (
 	"finote/internal/payment/service"
 	"finote/internal/web"
 	"net/http"
+	"strings"
 )
 
 type Handler struct {
 	service *service.Service
 	mux     *http.ServeMux
+	timed   http.Handler
 }
 
 func New(service *service.Service) *Handler {
@@ -22,10 +24,15 @@ func New(service *service.Service) *Handler {
 	h.mux.HandleFunc("PUT /v1/payments/{id}", h.updatePayment)
 	h.mux.HandleFunc("DELETE /v1/payments/{id}", h.deletePayment)
 	h.mux.Handle("GET /", web.Handler())
+	h.timed = withTimeout(h.mux, operationTimeout, responseTimeout)
 	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/v1/") {
+		h.timed.ServeHTTP(w, r)
+		return
+	}
 	h.mux.ServeHTTP(w, r)
 }
 
@@ -38,7 +45,7 @@ func (h *Handler) createPayment(w http.ResponseWriter, r *http.Request) {
 
 	payment, err := h.service.CreatePayment(r.Context(), body)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, payment)
@@ -51,7 +58,7 @@ func (h *Handler) getPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	payment, err := h.service.GetPayment(r.Context(), id)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
@@ -70,7 +77,7 @@ func (h *Handler) updatePayment(w http.ResponseWriter, r *http.Request) {
 
 	payment, err := h.service.UpdatePayment(r.Context(), id, body)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, payment)
@@ -83,7 +90,7 @@ func (h *Handler) deletePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	err := h.service.DeletePayment(r.Context(), id)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

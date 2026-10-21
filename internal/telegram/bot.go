@@ -249,6 +249,8 @@ func (b *Bot) prepareReply(ctx context.Context, user string, u Update) (string, 
 		}
 	} else if pending && text != "" {
 		intent.answer = text
+	} else if local, ok := referenceCommand(text); ok {
+		intent = local
 	} else if text != "" {
 		planCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
 		parsed, err := b.planner.Plan(planCtx, text, time.Now().In(b.location))

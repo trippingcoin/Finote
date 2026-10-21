@@ -16,7 +16,7 @@ func Handler() http.Handler {
 	}
 	server := http.FileServer(http.FS(root))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/style.css" {
+		if r.URL.Path != "/" && r.URL.Path != "/app.js" && r.URL.Path != "/api.js" && r.URL.Path != "/style.css" {
 			http.NotFound(w, r)
 			return
 		}

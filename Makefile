@@ -1,4 +1,7 @@
-.PHONY: test test-integration run
+.PHONY: test test-integration test-web run
+
+test-web:
+	node --test internal/web/api_test.cjs
 
 test:
 	go test ./...

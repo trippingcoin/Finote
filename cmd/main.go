@@ -65,7 +65,11 @@ func run() error {
 	handler := httpapi.New(service.New(repo.New(database)))
 	address := fmt.Sprintf(":%d", cfg.Port)
 	slog.Info("starting payment API", "address", address)
-	server := &http.Server{Addr: address, Handler: healthHandler(handler, database), ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{
+		Addr: address, Handler: healthHandler(handler, database),
+		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
+		WriteTimeout: 12 * time.Second, IdleTimeout: 60 * time.Second,
+	}
 	failures := make(chan error, 2)
 	go func() { failures <- server.ListenAndServe() }()
 	botDone := make(chan struct{})

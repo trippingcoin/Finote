@@ -6,6 +6,7 @@
   <meta name="color-scheme" content="light dark">
   <title>Finote — расходы семьи</title>
   <link rel="stylesheet" href="/style.css">
+  <script src="/api.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
@@ -71,6 +72,7 @@
       <label>Категория<select id="payment-category" name="category" required><option value="" disabled selected>Выберите категорию</option></select></label>
       <label>Комментарий <span class="optional">необязательно</span><textarea id="payment-comment" name="comment" rows="3" maxlength="500" placeholder="Например, кофе по дороге на работу"></textarea></label>
       <p id="save-error" class="inline-error" role="alert" hidden></p>
+      <button type="button" class="secondary" id="check-save" hidden>Проверить список расходов</button>
       <div class="dialog-actions"><button type="button" class="quiet" id="cancel-editor">Отмена</button><button class="primary" id="save" type="submit">Добавить расход</button></div>
     </form>
   </dialog>
@@ -80,6 +82,7 @@
     <h2 id="delete-title">Удалить расход?</h2><p id="delete-help" class="dialog-help">Запись исчезнет из панели и Telegram. Отменить удаление нельзя.</p>
     <div class="delete-summary"><strong id="delete-description"></strong><span id="delete-amount"></span></div>
     <p id="delete-error" class="inline-error" role="alert" hidden></p>
+    <button type="button" class="secondary" id="check-delete" hidden>Проверить список расходов</button>
     <div class="dialog-actions"><button class="quiet" id="cancel-delete" autofocus>Оставить</button><button class="danger" id="confirm-delete">Удалить расход</button></div>
   </dialog>
   <div id="toast" class="toast" role="status" hidden></div>

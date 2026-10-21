@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"database/sql"
 	"encoding/hex"
 	"errors"
@@ -14,15 +15,21 @@ import (
 	_ "time/tzdata"
 )
 
-func respondError(w http.ResponseWriter, err error) {
+func respondError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
+	case r.Context().Err() != nil || errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
+		timeoutResponse(w, r)
 	case errors.Is(err, service.ErrValidation):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.TrimPrefix(err.Error(), service.ErrValidation.Error()+": ")})
 	case errors.Is(err, sql.ErrNoRows):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Расход не найден. Возможно, он уже удалён."})
 	default:
 		slog.Error("payment API request failed", "error", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "Не удалось выполнить запрос. Попробуйте ещё раз."})
+		message := "Не удалось выполнить запрос. Попробуйте обновить список."
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			message = unknownOutcome
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": message})
 	}
 }
 
@@ -44,7 +51,7 @@ func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := h.service.ListPayments(r.Context(), f)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -101,7 +108,7 @@ func parseFilter(r *http.Request) (model.Filter, error) {
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
 	users, err := h.service.ListUsers(r.Context())
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, users)
@@ -119,7 +126,7 @@ func (h *Handler) patchPayment(w http.ResponseWriter, r *http.Request) {
 	}
 	p, err := h.service.PatchPayment(r.Context(), id, body)
 	if err != nil {
-		respondError(w, err)
+		respondError(w, r, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, p)
