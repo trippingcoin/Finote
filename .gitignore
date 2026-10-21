@@ -1,2 +1,8 @@
 .env
+.env.*
+!.env.example
+.idea/
+*.test
+!Dockerfile.test
+coverage.out
 .postman

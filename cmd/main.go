@@ -5,6 +5,7 @@ import (
 	"errors"
 	"finote/config"
 	"finote/internal/infrastucture/db"
+	"finote/internal/migrations"
 	"finote/internal/payment/httpapi"
 	"finote/internal/payment/repo"
 	"finote/internal/payment/service"
@@ -46,22 +47,14 @@ func run() error {
 	}
 	defer database.Close()
 
-	const schema = `CREATE TABLE IF NOT EXISTS payments (
-		id UUID PRIMARY KEY,
-		user_id TEXT NOT NULL,
-		amount NUMERIC(14,2) NOT NULL CHECK (amount > 0),
-		category TEXT NOT NULL,
-		spent_at TIMESTAMPTZ NOT NULL,
-		comment TEXT NOT NULL DEFAULT '',
-		created_at TIMESTAMPTZ NOT NULL,
-		updated_at TIMESTAMPTZ NOT NULL
-	)`
-	if _, err := database.Exec(schema); err != nil {
-		return fmt.Errorf("create payments table: %w", err)
-	}
-
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	migrateCtx, cancelMigrations := context.WithTimeout(ctx, 30*time.Second)
+	err = migrations.Apply(migrateCtx, database)
+	cancelMigrations()
+	if err != nil {
+		return fmt.Errorf("apply migrations: %w", err)
+	}
 	var bot *telegram.Bot
 	if cfg.Telegram.Token != "" {
 		location, err := time.LoadLocation(cfg.Telegram.Timezone)

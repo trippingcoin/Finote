@@ -1,0 +1,6 @@
+FROM golang:1.25
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+CMD ["sh", "-c", "go test -race -count=1 ./... && go vet ./..."]

@@ -23,7 +23,7 @@ services:
       POSTGRES_USER: finote
       POSTGRES_PASSWORD: finote
     ports:
-      - "7432:5432"
+      - "127.0.0.1:7432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:

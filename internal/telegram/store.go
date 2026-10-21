@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"finote/internal/migrations"
 	"finote/internal/payment/model"
 	"finote/internal/payment/repo"
 	"finote/internal/payment/service"
@@ -22,18 +23,7 @@ type Store struct {
 func NewStore(db *sql.DB, location *time.Location) *Store { return &Store{db, location} }
 
 func (s *Store) Init(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS telegram_updates (
- bot_id TEXT NOT NULL, update_id BIGINT NOT NULL, response TEXT NOT NULL,
- PRIMARY KEY (bot_id, update_id)
- )`)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS telegram_dialogs (
- bot_id TEXT NOT NULL, user_id TEXT NOT NULL, payload JSONB NOT NULL,
- expires_at TIMESTAMPTZ NOT NULL, PRIMARY KEY(bot_id,user_id)
- )`)
-	return err
+	return migrations.Apply(ctx, s.db)
 }
 
 func (s *Store) Offset(ctx context.Context, bot string) (int64, error) {
