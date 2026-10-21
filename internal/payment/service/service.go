@@ -25,7 +25,11 @@ func New(repo *repo.Repo) *Service {
 }
 
 func (s *Service) CreatePayment(ctx context.Context, body model.Payment) (model.Payment, error) {
-	body = normalizePayment(body)
+	var err error
+	body.UserID, err = NormalizeUserID(body.UserID)
+	if err != nil {
+		return model.Payment{}, err
+	}
 	if err := validatePayment(body); err != nil {
 		return model.Payment{}, err
 	}

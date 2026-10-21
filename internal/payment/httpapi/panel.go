@@ -52,7 +52,7 @@ func (h *Handler) listPayments(w http.ResponseWriter, r *http.Request) {
 
 func parseFilter(r *http.Request) (model.Filter, error) {
 	q := r.URL.Query()
-	f := model.Filter{UserID: strings.TrimSpace(q.Get("user_id")), Category: q.Get("category"), Limit: 20}
+	f := model.Filter{UserID: q.Get("user_id"), Category: q.Get("category"), Limit: 20}
 	bad := errors.New("Проверьте фильтры: даты, категорию и параметры страницы.")
 	if f.Category != "" && !service.ValidateCategory(f.Category) {
 		return f, bad

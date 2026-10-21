@@ -30,9 +30,8 @@ func validateAmount(amount float64) error {
 }
 
 func validatePayment(p model.Payment) error {
-	id, err := strconv.ParseInt(p.UserID, 10, 64)
-	if err != nil || id <= 0 {
-		return invalid("Укажите положительный Telegram ID участника.")
+	if _, err := NormalizeUserID(p.UserID); err != nil {
+		return err
 	}
 	return ValidateChanges(model.UpdatePayment{Amount: &p.Amount, Category: &p.Category, Comment: &p.Comment})
 }
@@ -67,19 +66,44 @@ func ValidateChanges(p model.UpdatePayment) error {
 }
 
 func (s *Service) FindPayments(ctx context.Context, f model.Filter) ([]model.Payment, error) {
+	f, err := normalizeFilter(f)
+	if err != nil {
+		return nil, err
+	}
 	return s.repo.FindPayments(ctx, f)
 }
 func (s *Service) SumPayments(ctx context.Context, f model.Filter) (string, int64, error) {
+	f, err := normalizeFilter(f)
+	if err != nil {
+		return "", 0, err
+	}
 	return s.repo.SumPayments(ctx, f)
 }
 
 func (s *Service) ListPayments(ctx context.Context, f model.Filter) (model.PaymentList, error) {
+	f, err := normalizeFilter(f)
+	if err != nil {
+		return model.PaymentList{}, err
+	}
 	return s.repo.ListPayments(ctx, f)
 }
 func (s *Service) ListUsers(ctx context.Context) ([]string, error) { return s.repo.ListUsers(ctx) }
 
-// Normalizes only whitespace; ownership still comes from the supplied admin input.
-func normalizePayment(p model.Payment) model.Payment {
-	p.UserID = strings.TrimSpace(p.UserID)
-	return p
+// NormalizeUserID matches Telegram's decimal int64 representation.
+// This changes formatting, not the source of ownership.
+func NormalizeUserID(value string) (string, error) {
+	id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	if err != nil || id <= 0 {
+		return "", invalid("Укажите положительный Telegram ID участника.")
+	}
+	return strconv.FormatInt(id, 10), nil
+}
+
+func normalizeFilter(f model.Filter) (model.Filter, error) {
+	if f.UserID == "" {
+		return f, nil
+	} // no filter means all owners in the admin API
+	var err error
+	f.UserID, err = NormalizeUserID(f.UserID)
+	return f, err
 }
