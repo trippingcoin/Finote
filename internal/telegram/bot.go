@@ -44,6 +44,9 @@ type botStore interface {
 	Receipt(context.Context, string, int64) (string, bool, error)
 	HasDialog(context.Context, string, string) (bool, error)
 	Process(context.Context, string, int64, string, Intent) (string, error)
+	QueueReply(context.Context, string, int64, int64, string) error
+	NextReply(context.Context, string) (outgoingReply, bool, error)
+	FinishReply(context.Context, string, outgoingReply, string, time.Duration, string) error
 }
 
 func NewBot(token string, planner Planner, store *Store, location *time.Location) (*Bot, error) {
@@ -54,7 +57,9 @@ func NewBot(token string, planner Planner, store *Store, location *time.Location
 	return &Bot{"https://api.telegram.org/bot" + token + "/", id, &http.Client{Timeout: 40 * time.Second}, planner, store, location}, nil
 }
 
-type apiError struct{ Code int }
+type apiError struct{ Code, RetryAfter int }
+
+var errWebhookConfigured = errors.New("Telegram webhook is configured; remove it before using polling")
 
 func (e apiError) Error() string { return fmt.Sprintf("Telegram API error %d", e.Code) }
 
@@ -83,19 +88,25 @@ func (b *Bot) call(ctx context.Context, method string, payload any, target any) 
 		return errors.New("Telegram connection failed")
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK {
-		return apiError{response.StatusCode}
-	}
 	var envelope struct {
-		OK        bool            `json:"ok"`
-		ErrorCode int             `json:"error_code"`
-		Result    json.RawMessage `json:"result"`
+		OK         bool            `json:"ok"`
+		ErrorCode  int             `json:"error_code"`
+		Result     json.RawMessage `json:"result"`
+		Parameters struct {
+			RetryAfter int `json:"retry_after"`
+		} `json:"parameters"`
 	}
 	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil {
+		if response.StatusCode != http.StatusOK {
+			return apiError{Code: response.StatusCode}
+		}
 		return errors.New("invalid Telegram response")
 	}
+	if response.StatusCode != http.StatusOK {
+		return apiError{Code: response.StatusCode, RetryAfter: envelope.Parameters.RetryAfter}
+	}
 	if !envelope.OK {
-		return apiError{envelope.ErrorCode}
+		return apiError{Code: envelope.ErrorCode, RetryAfter: envelope.Parameters.RetryAfter}
 	}
 	if target != nil {
 		return json.Unmarshal(envelope.Result, target)
@@ -107,6 +118,21 @@ func (b *Bot) Run(ctx context.Context) error {
 	if err := b.store.Init(ctx); err != nil {
 		return err
 	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, 2)
+	go func() { results <- b.poll(ctx) }()
+	go func() { results <- b.deliveryLoop(ctx) }()
+	err := <-results
+	cancel()
+	other := <-results // no overlapping workers on supervisor restart
+	if critical(other) {
+		return other
+	}
+	return err
+}
+
+func (b *Bot) poll(ctx context.Context) error {
 	// Do not silently delete an existing webhook.
 	var webhook struct {
 		URL string `json:"url"`
@@ -115,7 +141,7 @@ func (b *Bot) Run(ctx context.Context) error {
 		return err
 	}
 	if webhook.URL != "" {
-		return errors.New("Telegram webhook is configured; remove it before using polling")
+		return errWebhookConfigured
 	}
 	// Only acknowledge a complete batch. MAX(receipt) is unsafe when users
 	// finish out of order; after restart Telegram replays unacknowledged updates.
@@ -191,20 +217,21 @@ func (b *Bot) processBatch(ctx context.Context, updates []Update) error {
 	return result
 }
 
-const storageErrorReply = "Не удалось подтвердить результат операции. Проверьте список расходов перед повторным добавлением."
-
 func (b *Bot) handleUpdate(ctx context.Context, user string, u Update) error {
 	reply, found, err := b.store.Receipt(ctx, b.id, u.ID)
-	if err == nil && !found {
-		reply, err = b.prepareReply(ctx, user, u)
+	if err == nil {
+		if found {
+			err = b.store.QueueReply(ctx, b.id, u.ID, u.Message.Chat.ID, reply)
+		} else {
+			_, err = b.prepareReply(ctx, user, u)
+		}
 	}
 	if err != nil {
 		slog.ErrorContext(ctx, "Telegram expense operation failed", "update_id", u.ID, "error", err)
-		// A failed COMMIT may have succeeded on the server. Never claim rollback.
-		_ = b.deliver(ctx, u.Message.Chat.ID, storageErrorReply)
+		// Keep the update unacknowledged. A retry checks its receipt before LLM.
 		return fmt.Errorf("Telegram storage operation: %w", err)
 	}
-	return b.deliver(ctx, u.Message.Chat.ID, reply)
+	return nil // reply and mutation are durable; delivery is independent
 }
 
 func (b *Bot) prepareReply(ctx context.Context, user string, u Update) (string, error) {
@@ -234,37 +261,6 @@ func (b *Bot) prepareReply(ctx context.Context, user string, u Update) (string, 
 		}
 	}
 	return b.store.Process(ctx, b.id, u.ID, user, intent)
-}
-
-func (b *Bot) deliver(ctx context.Context, chat int64, reply string) error {
-	ctx, cancel := context.WithTimeout(ctx, 35*time.Second)
-	defer cancel()
-	var err error
-	for attempt := 0; attempt < 3; attempt++ {
-		err = b.call(ctx, "sendMessage", map[string]any{"chat_id": chat, "text": reply}, nil)
-		if err == nil {
-			return nil
-		}
-		var api apiError
-		if errors.As(err, &api) {
-			if api.Code == 400 || api.Code == 403 {
-				slog.WarnContext(ctx, "Telegram reply rejected", "error", err)
-				return nil // cannot deliver to this chat; do not block polling
-			}
-			if api.Code == 401 {
-				return err
-			}
-		}
-		if attempt == 2 {
-			break
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Duration(attempt+1) * time.Second):
-		}
-	}
-	return fmt.Errorf("Telegram reply delivery exhausted: %w", err)
 }
 
 func owner(m *Message) (string, bool) {

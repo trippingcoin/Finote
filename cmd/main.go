@@ -57,31 +57,23 @@ func run() error {
 	}
 	var bot *telegram.Bot
 	if cfg.Telegram.Token != "" {
-		location, err := time.LoadLocation(cfg.Telegram.Timezone)
+		bot, err = configureBot(cfg, database)
 		if err != nil {
-			return fmt.Errorf("telegram timezone: %w", err)
-		}
-		agent, err := telegram.NewAgent(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
-		if err != nil {
-			return fmt.Errorf("initialize LLM agent: %w", err)
-		}
-		bot, err = telegram.NewBot(cfg.Telegram.Token, agent, telegram.NewStore(database, location), location)
-		if err != nil {
-			return fmt.Errorf("initialize Telegram bot: %w", err)
+			slog.Error("Telegram disabled by configuration; web panel remains available", "error", err)
 		}
 	}
 	handler := httpapi.New(service.New(repo.New(database)))
 	address := fmt.Sprintf(":%d", cfg.Port)
 	slog.Info("starting payment API", "address", address)
-	server := &http.Server{Addr: address, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
+	server := &http.Server{Addr: address, Handler: healthHandler(handler, database), ReadHeaderTimeout: 5 * time.Second}
 	failures := make(chan error, 2)
 	go func() { failures <- server.ListenAndServe() }()
 	botDone := make(chan struct{})
 	if bot != nil {
-		go func() { defer close(botDone); failures <- bot.Run(ctx) }()
+		go func() { defer close(botDone); telegram.RunIsolated(ctx, bot.Run) }()
 	} else {
 		close(botDone)
-		slog.Info("Telegram disabled: TELEGRAM_BOT_TOKEN is empty")
+		slog.Info("Telegram is disabled")
 	}
 	var runErr error
 	select {

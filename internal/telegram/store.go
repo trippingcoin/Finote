@@ -63,7 +63,10 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	var reply string
 	err = tx.QueryRowContext(ctx, `SELECT response FROM telegram_updates WHERE bot_id=$1 AND update_id=$2`, bot, update).Scan(&reply)
 	if err == nil {
-		return reply, nil
+		if _, err = tx.ExecContext(ctx, enqueueReplySQL, bot, update, user, reply); err != nil {
+			return "", err
+		}
+		return reply, tx.Commit()
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return "", err
@@ -87,6 +90,9 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 		return "", err
 	}
 	if _, err = tx.ExecContext(ctx, `INSERT INTO telegram_updates(bot_id,update_id,response) VALUES($1,$2,$3)`, bot, update, reply); err != nil {
+		return "", err
+	}
+	if _, err = tx.ExecContext(ctx, enqueueReplySQL, bot, update, user, reply); err != nil {
 		return "", err
 	}
 	return reply, tx.Commit()
