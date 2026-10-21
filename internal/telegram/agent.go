@@ -17,6 +17,9 @@ import (
 
 // Intent contains no owner field: ownership always comes from Telegram.
 type Intent struct {
+	// Internal dialog control cannot be supplied by the LLM JSON.
+	answer         string
+	cancelDialog   bool
 	Action         string   `json:"action"`
 	ID             string   `json:"id"`
 	Latest         bool     `json:"latest"`
