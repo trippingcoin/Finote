@@ -146,7 +146,7 @@ func (b *Bot) Run(ctx context.Context) error {
 					cancel()
 					if err != nil {
 						slog.WarnContext(ctx, "Telegram: failed to parse expense request", "error", err, "update_id", u.ID)
-						intent.Question = "Не удалось разобрать запрос. Укажите действие, сумму и описание; если ошибка повторяется, попробуйте позже."
+						intent.Question = plannerErrorReply(err)
 					} else {
 						intent = parsed
 					}

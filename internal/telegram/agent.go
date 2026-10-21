@@ -9,6 +9,7 @@ import (
 	"finote/internal/payment/service"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -79,6 +80,50 @@ question: уточнение для clarify.
 Не сообщай об успехе: ты только разбираешь текст, выполнение делает приложение.`
 
 func (a *Agent) Plan(ctx context.Context, input string, now time.Time) (Intent, error) {
+	// One budget covers every HTTP attempt and backoff, including direct callers.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	for attempt := 0; ; attempt++ {
+		intent, err := a.planOnce(ctx, input, now)
+		var status llmHTTPError
+		if !errors.As(err, &status) || status.Code != http.StatusServiceUnavailable || attempt == 3 {
+			return intent, err
+		}
+		delay := time.Second * time.Duration(1<<attempt)
+		slog.WarnContext(ctx, "LLM unavailable: retrying", "attempt", attempt+2, "delay", delay)
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return Intent{}, fmt.Errorf("%w: %w", ErrLLMUnavailable, ctx.Err())
+		case <-timer.C:
+		}
+		if err := ctx.Err(); err != nil {
+			return Intent{}, fmt.Errorf("%w: %w", ErrLLMUnavailable, err)
+		}
+	}
+}
+
+var ErrLLMUnavailable = errors.New("LLM service unavailable")
+
+type llmHTTPError struct{ Code int }
+
+func (e llmHTTPError) Error() string { return fmt.Sprintf("LLM HTTP %d", e.Code) }
+func (e llmHTTPError) Unwrap() error {
+	if e.Code == http.StatusServiceUnavailable {
+		return ErrLLMUnavailable
+	}
+	return nil
+}
+
+func plannerErrorReply(err error) string {
+	if errors.Is(err, ErrLLMUnavailable) {
+		return "ИИ-сервис временно недоступен. Расход не сохранён. Попробуйте позже"
+	}
+	return "Не удалось разобрать запрос. Укажите действие, сумму и описание; если ошибка повторяется, попробуйте позже."
+}
+
+func (a *Agent) planOnce(ctx context.Context, input string, now time.Time) (Intent, error) {
 	payload, err := json.Marshal(map[string]any{
 		"model": a.model,
 		"messages": []map[string]string{
@@ -102,13 +147,13 @@ func (a *Agent) Plan(ctx context.Context, input string, now time.Time) (Intent, 
 	if err != nil {
 		var networkError net.Error
 		if errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &networkError) && networkError.Timeout()) {
-			return Intent{}, errors.New("LLM request timed out after waiting for provider")
+			return Intent{}, fmt.Errorf("%w: request timed out", ErrLLMUnavailable)
 		}
-		return Intent{}, errors.New("LLM connection failed")
+		return Intent{}, fmt.Errorf("%w: connection failed", ErrLLMUnavailable)
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK {
-		return Intent{}, fmt.Errorf("LLM HTTP %d", res.StatusCode)
+		return Intent{}, llmHTTPError{Code: res.StatusCode}
 	}
 	var response struct {
 		Choices []struct {
@@ -118,6 +163,9 @@ func (a *Agent) Plan(ctx context.Context, input string, now time.Time) (Intent, 
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(io.LimitReader(res.Body, 1<<20)).Decode(&response); err != nil {
+		if ctx.Err() != nil {
+			return Intent{}, fmt.Errorf("%w: response timed out or canceled", ErrLLMUnavailable)
+		}
 		return Intent{}, fmt.Errorf("decode LLM response: %w", err)
 	}
 	if len(response.Choices) == 0 {
