@@ -23,6 +23,8 @@ func clearDialog(ctx context.Context, tx *sql.Tx, bot, user string) error {
 }
 
 func (s *Store) HasDialog(ctx context.Context, bot, user string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, databaseTimeout)
+	defer cancel()
 	var found bool
 	// Keep expired rows until the next answer so we can explicitly explain expiry.
 	err := s.db.QueryRowContext(ctx, "SELECT EXISTS(SELECT 1 FROM telegram_dialogs WHERE bot_id=$1 AND user_id=$2)", bot, user).Scan(&found)

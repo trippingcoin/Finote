@@ -20,20 +20,31 @@ type Store struct {
 	location *time.Location
 }
 
+const databaseTimeout = 5 * time.Second
+
 func NewStore(db *sql.DB, location *time.Location) *Store { return &Store{db, location} }
 
 func (s *Store) Init(ctx context.Context) error {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	return migrations.Apply(ctx, s.db)
 }
 
-func (s *Store) Offset(ctx context.Context, bot string) (int64, error) {
-	var offset int64
-	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(update_id)+1,0) FROM telegram_updates WHERE bot_id=$1`, bot).Scan(&offset)
-	return offset, err
+func (s *Store) Receipt(ctx context.Context, bot string, update int64) (string, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, databaseTimeout)
+	defer cancel()
+	var reply string
+	err := s.db.QueryRowContext(ctx, "SELECT response FROM telegram_updates WHERE bot_id=$1 AND update_id=$2", bot, update).Scan(&reply)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", false, nil
+	}
+	return reply, err == nil, err
 }
 
 // Mutation and receipt commit together; redelivery cannot repeat a mutation.
 func (s *Store) Process(ctx context.Context, bot string, update int64, user string, i Intent) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, databaseTimeout)
+	defer cancel()
 	if user == "" {
 		return "", errors.New("missing owner")
 	}
