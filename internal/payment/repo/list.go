@@ -8,8 +8,12 @@ import (
 	"strings"
 )
 
-func (r *Repo) ListPayments(ctx context.Context, f model.Filter) (model.PaymentList, error) {
-	result := model.PaymentList{Items: []model.Payment{}, Limit: f.Limit, Offset: f.Offset}
+const columns = "id,user_id,category,amount,comment,spent_at,created_at,updated_at"
+
+func (r *Repo) filter(f model.Filter) (string, []any) {
+	if r.owner != "" {
+		f.UserID = r.owner
+	}
 	parts := []string{"TRUE"}
 	args := []any{}
 	add := func(expr string, value any) {
@@ -18,6 +22,12 @@ func (r *Repo) ListPayments(ctx context.Context, f model.Filter) (model.PaymentL
 	}
 	if f.UserID != "" {
 		add("user_id=$%d", f.UserID)
+	}
+	if f.ID != "" {
+		add("id=$%d", f.ID)
+	}
+	if f.Search != "" {
+		add("strpos(lower(comment),lower($%d))>0", f.Search)
 	}
 	if f.Category != "" {
 		add("category=$%d", f.Category)
@@ -28,42 +38,80 @@ func (r *Repo) ListPayments(ctx context.Context, f model.Filter) (model.PaymentL
 	if f.To != nil {
 		add("spent_at < $%d", *f.To)
 	}
-	where := strings.Join(parts, " AND ")
-	// Totals and this page must describe the same snapshot, including concurrent bot writes.
-	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
-	if err != nil {
-		return result, err
-	}
-	defer tx.Rollback()
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(amount),0)::text,COUNT(DISTINCT user_id) FROM payments WHERE "+where, args...).Scan(&result.Total, &result.Amount, &result.Members)
-	if err != nil {
-		return result, err
-	}
-	args = append(args, f.Limit, f.Offset)
-	rows, err := tx.QueryContext(ctx, "SELECT id,user_id,category,amount,comment,spent_at,created_at,updated_at FROM payments WHERE "+where+
-		fmt.Sprintf(" ORDER BY spent_at DESC,created_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
-	if err != nil {
-		return result, err
-	}
+	return strings.Join(parts, " AND "), args
+}
+
+func scanRows(rows *sql.Rows) ([]model.Payment, error) {
 	defer rows.Close()
+	items := []model.Payment{}
 	for rows.Next() {
 		var p model.Payment
-		if err = rows.Scan(&p.ID, &p.UserID, &p.Category, &p.Amount, &p.Comment, &p.SpentAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
-			return result, err
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Category, &p.Amount, &p.Comment, &p.SpentAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+			return nil, err
 		}
-		result.Items = append(result.Items, p)
+		items = append(items, p)
 	}
-	if err = rows.Err(); err != nil {
-		return result, err
+	return items, rows.Err()
+}
+
+func (r *Repo) ListPayments(ctx context.Context, f model.Filter) (model.PaymentList, error) {
+	if r.db == nil {
+		return r.list(ctx, r.query, f)
 	}
-	if err = rows.Close(); err != nil {
+	tx, err := r.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true, Isolation: sql.LevelRepeatableRead})
+	if err != nil {
+		return model.PaymentList{}, err
+	}
+	defer tx.Rollback()
+	result, err := r.list(ctx, tx, f)
+	if err != nil {
 		return result, err
 	}
 	return result, tx.Commit()
 }
 
+func (r *Repo) list(ctx context.Context, q DBTX, f model.Filter) (model.PaymentList, error) {
+	result := model.PaymentList{Items: []model.Payment{}, Limit: f.Limit, Offset: f.Offset}
+	where, args := r.filter(f)
+	err := q.QueryRowContext(ctx, "SELECT COUNT(*),COALESCE(SUM(amount),0)::text,COUNT(DISTINCT user_id) FROM payments WHERE "+where, args...).Scan(&result.Total, &result.Amount, &result.Members)
+	if err != nil {
+		return result, err
+	}
+	args = append(args, f.Limit, f.Offset)
+	rows, err := q.QueryContext(ctx, "SELECT "+columns+" FROM payments WHERE "+where+fmt.Sprintf(" ORDER BY spent_at DESC,created_at DESC,id DESC LIMIT $%d OFFSET $%d", len(args)-1, len(args)), args...)
+	if err != nil {
+		return result, err
+	}
+	result.Items, err = scanRows(rows)
+	return result, err
+}
+
+// FindPayments keeps the bot's latest-by-creation semantics, not panel date order.
+func (r *Repo) FindPayments(ctx context.Context, f model.Filter) ([]model.Payment, error) {
+	where, args := r.filter(f)
+	limit := f.Limit
+	if limit < 1 || limit > 100 {
+		limit = 11
+	}
+	args = append(args, limit)
+	rows, err := r.query.QueryContext(ctx, "SELECT "+columns+" FROM payments WHERE "+where+fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT $%d", len(args)), args...)
+	if err != nil {
+		return nil, err
+	}
+	return scanRows(rows)
+}
+
+func (r *Repo) SumPayments(ctx context.Context, f model.Filter) (string, int64, error) {
+	where, args := r.filter(f)
+	var total string
+	var count int64
+	err := r.query.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0)::text,COUNT(*) FROM payments WHERE "+where, args...).Scan(&total, &count)
+	return total, count, err
+}
+
 func (r *Repo) ListUsers(ctx context.Context) ([]string, error) {
-	rows, err := r.db.QueryContext(ctx, "SELECT DISTINCT user_id FROM payments ORDER BY user_id")
+	where, args := r.filter(model.Filter{})
+	rows, err := r.query.QueryContext(ctx, "SELECT DISTINCT user_id FROM payments WHERE "+where+" ORDER BY user_id", args...)
 	if err != nil {
 		return nil, err
 	}

@@ -77,11 +77,7 @@ func (s *Service) UpdatePayment(ctx context.Context, id string, body model.Payme
 }
 
 func (s *Service) DeletePayment(ctx context.Context, id string) error {
-	_, err := s.repo.GetPayment(ctx, id)
-	if err != nil {
-		return fmt.Errorf("get payment: %w", err)
-	}
-	err = s.repo.DeletePayment(ctx, id)
+	err := s.repo.DeletePayment(ctx, id)
 	if err != nil {
 		return fmt.Errorf("delete payment: %w", err)
 	}

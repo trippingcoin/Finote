@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"finote/internal/payment/model"
+	"finote/internal/payment/service"
 	"fmt"
 	"io"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -135,11 +136,19 @@ func (a *Agent) Plan(ctx context.Context, input string, now time.Time) (Intent, 
 }
 
 func validCategory(s string) bool {
-	switch s {
-	case "еда", "транспорт", "жильё", "развлечения", "здоровье", "покупки", "другое":
-		return true
+	return service.ValidateCategory(s)
+}
+
+func (i Intent) changes() (model.UpdatePayment, error) {
+	p := model.UpdatePayment{Amount: i.Amount, Category: i.Category, Comment: i.Comment}
+	if i.SpentAt != nil {
+		t, err := time.Parse(time.RFC3339, *i.SpentAt)
+		if err != nil {
+			return p, err
+		}
+		p.SpentAt = &t
 	}
-	return false
+	return p, nil
 }
 
 func validate(i Intent) error {
@@ -162,16 +171,16 @@ func validate(i Intent) error {
 	default:
 		return bad
 	}
-	if i.Amount != nil && (math.IsNaN(*i.Amount) || math.IsInf(*i.Amount, 0) || *i.Amount <= 0 || *i.Amount >= 1e12) {
-		return bad
-	}
-	if i.Category != nil && !validCategory(*i.Category) {
-		return bad
+	if i.Amount != nil || i.Category != nil || i.Comment != nil || i.SpentAt != nil {
+		changes, err := i.changes()
+		if err != nil {
+			return bad
+		}
+		if err = service.ValidateChanges(changes); err != nil {
+			return err
+		}
 	}
 	if i.FilterCategory != "" && !validCategory(i.FilterCategory) {
-		return bad
-	}
-	if i.Comment != nil && len([]rune(*i.Comment)) > 500 {
 		return bad
 	}
 	if len(i.Search) > 500 {
@@ -193,14 +202,9 @@ func validate(i Intent) error {
 			}
 		}
 	}
-	if i.SpentAt != nil {
-		if _, err := time.Parse(time.RFC3339, *i.SpentAt); err != nil {
-			return bad
-		}
-	}
 	for _, date := range []string{i.From, i.To} {
 		if date != "" {
-			if _, err := time.Parse("2006-01-02", date); err != nil {
+			if parsed, err := time.Parse("2006-01-02", date); err != nil || parsed.Year() < 1 {
 				return bad
 			}
 		}

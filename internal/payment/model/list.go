@@ -3,6 +3,8 @@ package model
 import "time"
 
 type Filter struct {
+	ID       string
+	Search   string
 	UserID   string
 	Category string
 	From     *time.Time

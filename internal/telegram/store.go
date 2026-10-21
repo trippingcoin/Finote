@@ -2,7 +2,6 @@ package telegram
 
 import (
 	"context"
-	"crypto/rand"
 	"database/sql"
 	"errors"
 	"fmt"
@@ -11,6 +10,8 @@ import (
 	"time"
 
 	"finote/internal/payment/model"
+	"finote/internal/payment/repo"
+	"finote/internal/payment/service"
 )
 
 type Store struct {
@@ -90,16 +91,6 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	return reply, tx.Commit()
 }
 
-const columns = "id, user_id, category, amount, comment, spent_at, created_at, updated_at"
-
-type scanner interface{ Scan(...any) error }
-
-func scanPayment(row scanner) (model.Payment, error) {
-	var p model.Payment
-	err := row.Scan(&p.ID, &p.UserID, &p.Category, &p.Amount, &p.Comment, &p.SpentAt, &p.CreatedAt, &p.UpdatedAt)
-	return p, err
-}
-
 func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Intent) (string, error) {
 	if i.Action == "clarify" {
 		if i.Question == "" {
@@ -107,9 +98,13 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		}
 		return trim(i.Question, 1000), nil
 	}
-	now := time.Now().UTC()
+	owned, err := repo.NewOwnedTx(tx, user)
+	if err != nil {
+		return "", err
+	}
+	payments := service.New(owned)
 	if i.Action == "create" {
-		spent := now
+		var spent time.Time
 		if i.SpentAt != nil {
 			spent, _ = time.Parse(time.RFC3339, *i.SpentAt)
 		}
@@ -117,47 +112,18 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 		if i.Comment != nil {
 			comment = *i.Comment
 		}
-		var b [16]byte
-		if _, err := rand.Read(b[:]); err != nil {
-			return "", err
-		}
-		b[6] = (b[6] & 15) | 64
-		b[8] = (b[8] & 63) | 128
-		id := fmt.Sprintf("%x-%x-%x-%x-%x", b[:4], b[4:6], b[6:8], b[8:10], b[10:])
-		p, err := scanPayment(tx.QueryRowContext(ctx, `INSERT INTO payments(id,user_id,category,amount,comment,spent_at,created_at,updated_at)
-   VALUES($1,$2,$3,$4,$5,$6,$7,$7) RETURNING `+columns, id, user, i.Category, i.Amount, comment, spent, now))
+		p, err := payments.CreatePayment(ctx, model.Payment{UserID: user, Category: *i.Category, Amount: *i.Amount, Comment: comment, SpentAt: spent})
 		if err != nil {
 			return "", err
 		}
 		return "Расход добавлен\n\n" + s.describe(p), nil
 	}
-	where, args := s.filter(user, i)
+	filter := s.paymentFilter(i)
 	if i.Action == "sum" {
-		var total string
-		var count int64
-		err := tx.QueryRowContext(ctx, "SELECT COALESCE(SUM(amount),0)::text,COUNT(*) FROM payments WHERE "+where, args...).Scan(&total, &count)
+		total, count, err := payments.SumPayments(ctx, filter)
 		return fmt.Sprintf("Сумма расходов: %s ₸\nТрат: %d", total, count), err
 	}
-	limit := 11
-	if i.Latest {
-		limit = 1
-	}
-	rows, err := tx.QueryContext(ctx, "SELECT "+columns+" FROM payments WHERE "+where+
-		fmt.Sprintf(" ORDER BY created_at DESC,id DESC LIMIT %d", limit), args...)
-	if err != nil {
-		return "", err
-	}
-	var found []model.Payment
-	for rows.Next() {
-		p, e := scanPayment(rows)
-		if e != nil {
-			rows.Close()
-			return "", e
-		}
-		found = append(found, p)
-	}
-	err = rows.Err()
-	rows.Close()
+	found, err := payments.FindPayments(ctx, filter)
 	if err != nil {
 		return "", err
 	}
@@ -183,28 +149,20 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 	id := found[0].ID
 	// Owner is checked again in the actual mutation, never only in a prior SELECT.
 	if i.Action == "delete" {
-		res, err := tx.ExecContext(ctx, "DELETE FROM payments WHERE id=$1 AND user_id=$2", id, user)
-		if err != nil {
-			return "", err
-		}
-		n, err := res.RowsAffected()
-		if err != nil {
-			return "", err
-		}
-		if n == 0 {
+		err := payments.DeletePayment(ctx, id)
+		if errors.Is(err, sql.ErrNoRows) {
 			return "Трата уже удалена.", nil
+		}
+		if err != nil {
+			return "", err
 		}
 		return "Расход удалён\n\n" + s.describe(found[0]), nil
 	}
-	var spent *time.Time
-	if i.SpentAt != nil {
-		t, _ := time.Parse(time.RFC3339, *i.SpentAt)
-		spent = &t
+	changes, err := i.changes()
+	if err != nil {
+		return "", err
 	}
-	p, err := scanPayment(tx.QueryRowContext(ctx, `UPDATE payments SET
- category=COALESCE($3,category),amount=COALESCE($4,amount),
- comment=COALESCE($5,comment),spent_at=COALESCE($6,spent_at),updated_at=$7
- WHERE id=$1 AND user_id=$2 RETURNING `+columns, id, user, i.Category, i.Amount, i.Comment, spent, now))
+	p, err := payments.PatchPayment(ctx, id, changes)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "Трата уже удалена.", nil
 	}
@@ -214,31 +172,20 @@ func (s *Store) execute(ctx context.Context, tx *sql.Tx, bot, user string, i Int
 	return "Расход обновлён\n\n" + s.describe(p), nil
 }
 
-func (s *Store) filter(user string, i Intent) (string, []any) {
-	parts := []string{"user_id=$1"}
-	args := []any{user}
-	add := func(expression string, value any) {
-		args = append(args, value)
-		parts = append(parts, fmt.Sprintf(expression, len(args)))
-	}
-	if i.ID != "" {
-		add("id=$%d", i.ID)
-	}
-	if i.Search != "" {
-		add("strpos(lower(comment),lower($%d))>0", i.Search)
-	}
-	if i.FilterCategory != "" {
-		add("category=$%d", i.FilterCategory)
+func (s *Store) paymentFilter(i Intent) model.Filter {
+	f := model.Filter{ID: i.ID, Search: i.Search, Category: i.FilterCategory, Limit: 11}
+	if i.Latest {
+		f.Limit = 1
 	}
 	if i.From != "" {
 		t, _ := time.ParseInLocation("2006-01-02", i.From, s.location)
-		add("spent_at >= $%d", t)
+		f.From = &t
 	}
 	if i.To != "" {
 		t, _ := time.ParseInLocation("2006-01-02", i.To, s.location)
-		add("spent_at < $%d", t)
+		f.To = &t
 	}
-	return strings.Join(parts, " AND "), args
+	return f
 }
 
 func (s *Store) describe(p model.Payment) string {
