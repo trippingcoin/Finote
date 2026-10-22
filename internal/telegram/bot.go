@@ -22,8 +22,11 @@ type Update struct {
 type Message struct {
 	Text string `json:"text"`
 	From *struct {
-		ID    int64 `json:"id"`
-		IsBot bool  `json:"is_bot"`
+		ID        int64  `json:"id"`
+		IsBot     bool   `json:"is_bot"`
+		FirstName string `json:"first_name"`
+		LastName  string `json:"last_name"`
+		Username  string `json:"username"`
 	} `json:"from"`
 	Chat struct {
 		ID   int64  `json:"id"`
@@ -261,6 +264,9 @@ func (b *Bot) prepareReply(ctx context.Context, user string, u Update) (string, 
 		} else {
 			intent = parsed
 		}
+	}
+	if verified, ok := owner(u.Message); ok && verified == user {
+		intent.profile = &profileUpdate{DisplayName: trim(strings.Join(strings.Fields(u.Message.From.FirstName+" "+u.Message.From.LastName), " "), 128), Username: trim(u.Message.From.Username, 64)}
 	}
 	return b.store.Process(ctx, b.id, u.ID, user, intent)
 }

@@ -21,6 +21,8 @@ func respondError(w http.ResponseWriter, r *http.Request, err error) {
 		timeoutResponse(w, r)
 	case errors.Is(err, service.ErrValidation):
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": strings.TrimPrefix(err.Error(), service.ErrValidation.Error()+": ")})
+	case errors.Is(err, model.ErrConflict):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Расход уже изменён в другом месте. Ваши изменения не сохранены. Обновите запись и сравните значения.", "code": "version_conflict"})
 	case errors.Is(err, sql.ErrNoRows):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "Расход не найден. Возможно, он уже удалён."})
 	default:
@@ -106,6 +108,15 @@ func parseFilter(r *http.Request) (model.Filter, error) {
 }
 
 func (h *Handler) listUsers(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("details") == "true" {
+		users, err := h.service.ListUserProfiles(r.Context())
+		if err != nil {
+			respondError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, users)
+		return
+	}
 	users, err := h.service.ListUsers(r.Context())
 	if err != nil {
 		respondError(w, r, err)

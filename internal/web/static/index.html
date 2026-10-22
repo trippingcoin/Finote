@@ -72,6 +72,7 @@
       <label>Категория<select id="payment-category" name="category" required><option value="" disabled selected>Выберите категорию</option></select></label>
       <label>Комментарий <span class="optional">необязательно</span><textarea id="payment-comment" name="comment" rows="3" maxlength="500" placeholder="Например, кофе по дороге на работу"></textarea></label>
       <p id="save-error" class="inline-error" role="alert" hidden></p>
+      <button type="button" class="secondary" id="reload-payment" hidden>Обновить форму (сбросить введённые изменения)</button>
       <button type="button" class="secondary" id="check-save" hidden>Проверить список расходов</button>
       <div class="dialog-actions"><button type="button" class="quiet" id="cancel-editor">Отмена</button><button class="primary" id="save" type="submit">Добавить расход</button></div>
     </form>

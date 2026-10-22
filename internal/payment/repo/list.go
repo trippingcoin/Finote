@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-const columns = "id,user_id,category,amount,comment,spent_at,created_at,updated_at"
+const columns = "id,user_id,category,amount,comment,spent_at,created_at,updated_at,version"
 
 func (r *Repo) filter(f model.Filter) (string, []any) {
 	if r.owner != "" {
@@ -46,7 +46,7 @@ func scanRows(rows *sql.Rows) ([]model.Payment, error) {
 	items := []model.Payment{}
 	for rows.Next() {
 		var p model.Payment
-		if err := rows.Scan(&p.ID, &p.UserID, &p.Category, &p.Amount, &p.Comment, &p.SpentAt, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		if err := rows.Scan(&p.ID, &p.UserID, &p.Category, &p.Amount, &p.Comment, &p.SpentAt, &p.CreatedAt, &p.UpdatedAt, &p.Version); err != nil {
 			return nil, err
 		}
 		items = append(items, p)
@@ -110,8 +110,7 @@ func (r *Repo) SumPayments(ctx context.Context, f model.Filter) (string, int64, 
 }
 
 func (r *Repo) ListUsers(ctx context.Context) ([]string, error) {
-	where, args := r.filter(model.Filter{})
-	rows, err := r.query.QueryContext(ctx, "SELECT DISTINCT user_id FROM payments WHERE "+where+" ORDER BY user_id", args...)
+	rows, err := r.query.QueryContext(ctx, "SELECT id FROM users WHERE ($1='' OR id=$1) ORDER BY id", r.owner)
 	if err != nil {
 		return nil, err
 	}

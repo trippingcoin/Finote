@@ -38,7 +38,7 @@ func (r *Repo) CreatePayment(ctx context.Context, body model.Payment) (model.Pay
 	}
 	const query = `INSERT INTO payments (id, user_id, category, amount, comment, spent_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, user_id, category, amount, comment, spent_at, created_at, updated_at`
+RETURNING id, user_id, category, amount, comment, spent_at, created_at, updated_at, version`
 
 	var payment model.Payment
 	err := r.query.QueryRowContext(ctx, query,
@@ -59,13 +59,14 @@ RETURNING id, user_id, category, amount, comment, spent_at, created_at, updated_
 		&payment.SpentAt,
 		&payment.CreatedAt,
 		&payment.UpdatedAt,
+		&payment.Version,
 	)
 	return payment, err
 }
 
 func (r *Repo) GetPayment(ctx context.Context, id string) (model.Payment, error) {
 	const query = `
-		SELECT id, user_id, category, amount, comment, spent_at, created_at, updated_at
+		SELECT id, user_id, category, amount, comment, spent_at, created_at, updated_at, version
 		FROM payments
 		WHERE id = $1 AND ($2 = '' OR user_id = $2)
 	`
@@ -80,6 +81,7 @@ func (r *Repo) GetPayment(ctx context.Context, id string) (model.Payment, error)
 		&payment.SpentAt,
 		&payment.CreatedAt,
 		&payment.UpdatedAt,
+		&payment.Version,
 	)
 	return payment, err
 }
@@ -93,8 +95,9 @@ func (r *Repo) UpdatePayment(ctx context.Context, id string, body model.UpdatePa
 		    spent_at = COALESCE($5, spent_at),
 		    updated_at = $6
 		WHERE id = $1 AND ($7 = '' OR user_id = $7)
+		  AND ($8::bigint IS NULL OR version = $8)
 		RETURNING id, user_id, category, amount, comment,
-		          spent_at, created_at, updated_at
+		          spent_at, created_at, updated_at, version
 	`
 
 	var payment model.Payment
@@ -108,6 +111,7 @@ func (r *Repo) UpdatePayment(ctx context.Context, id string, body model.UpdatePa
 		body.SpentAt,
 		updatedAt,
 		r.owner,
+		body.ExpectedVersion,
 	).Scan(
 		&payment.ID,
 		&payment.UserID,
@@ -117,8 +121,16 @@ func (r *Repo) UpdatePayment(ctx context.Context, id string, body model.UpdatePa
 		&payment.SpentAt,
 		&payment.CreatedAt,
 		&payment.UpdatedAt,
+		&payment.Version,
 	)
-
+	if errors.Is(err, sql.ErrNoRows) && body.ExpectedVersion != nil {
+		// Only classify accessible rows. Never disclose a different owner's record.
+		if _, lookupErr := r.GetPayment(ctx, id); lookupErr == nil {
+			err = model.ErrConflict
+		} else {
+			err = lookupErr
+		}
+	}
 	return payment, err
 }
 

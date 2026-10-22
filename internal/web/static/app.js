@@ -10,6 +10,9 @@ function calendarDate(value) {
   return p.year + '-' + p.month + '-' + p.day;
 }
 const state = { offset: 0, limit: 20, total: 0, items: [], editing: null, deleting: null, saving: false, removing: false, saveUnknown: false, deleteUnknown: false, controller: null, toastTimer: null };
+state.users = new Map();
+state.saveConflict = false;
+function userLabel(user) { return user.display_name || (user.username ? '@' + user.username : 'Участник ' + user.id); }
 function option(value, label) { const o = document.createElement('option'); o.value = value; o.textContent = label; return o; }
 for (const category of categories) {
   $('filter-category').append(option(category, category));
@@ -46,13 +49,15 @@ function periodText() {
 
 async function loadUsers() {
   try {
-    const users = await api('/v1/users'), selected = $('filter-user').value;
+    const users = await api('/v1/users?details=true'), selected = $('filter-user').value;
+    state.users = new Map(users.map(user => [user.id, user]));
     $('filter-user').replaceChildren(option('', 'Все участники'));
     $('known-users').replaceChildren();
-    for (const user of users) { $('filter-user').append(option(user, 'ID ' + user)); $('known-users').append(option(user, 'Участник ' + user)); }
-    if (selected && !users.includes(selected)) $('filter-user').append(option(selected, 'ID ' + selected));
+    for (const user of users) { const label = userLabel(user) + ' · ID ' + user.id; $('filter-user').append(option(user.id, label)); $('known-users').append(option(user.id, label)); }
+    if (selected && !state.users.has(selected)) $('filter-user').append(option(selected, 'ID ' + selected));
     $('filter-user').value = selected;
     $('users-warning').hidden = true;
+    renderRows();
   } catch { $('users-warning').hidden = false; }
 }
 
@@ -110,7 +115,8 @@ function renderRows() {
     const title = element('td');
     title.append(element('span', 'expense-title', payment.comment || 'Без описания'), element('span', 'badge', payment.category));
     const member = element('td', 'member');
-    member.append(element('span', 'member-label', 'Участник'), document.createTextNode(payment.user_id));
+    const user = state.users.get(payment.user_id) || { id: payment.user_id };
+    member.append(element('span', 'member-label', userLabel(user)), document.createTextNode('ID ' + payment.user_id));
     const actions = element('td', 'actions-cell'), buttons = element('div', 'row-actions');
     const edit = element('button', 'quiet', 'Изменить');
     edit.setAttribute('aria-label', 'Изменить расход: ' + (payment.comment || payment.category));
@@ -125,6 +131,7 @@ function renderRows() {
 }
 
 function openEditor(payment = null) {
+  state.saveConflict = false; $('reload-payment').hidden = true;
   state.saveUnknown = false; $('save').disabled = false; $('check-save').hidden = true;
   state.editing = payment; $('payment-form').reset(); showError('save-error');
   $('editor-title').textContent = payment ? 'Редактировать расход' : 'Новый расход';
@@ -143,14 +150,20 @@ function openEditor(payment = null) {
 function closeEditor() { if (!state.saving) $('editor').close(); }
 $('editor').addEventListener('cancel', event => { if (state.saving) event.preventDefault(); });
 $('payment-form').addEventListener('submit', async event => {
-  event.preventDefault(); if (state.saving || state.saveUnknown || !$('payment-form').reportValidity()) return;
+  event.preventDefault(); if (state.saving || state.saveUnknown || state.saveConflict || !$('payment-form').reportValidity()) return;
   const amount = Number($('payment-amount').value);
   if (!Number.isFinite(amount) || amount <= 0) { showError('save-error', 'Укажите положительную сумму.'); return; }
   const original = state.editing;
   const date = $('payment-date').value;
-  const body = { amount, category: $('payment-category').value, comment: $('payment-comment').value,
+  let body = { amount, category: $('payment-category').value, comment: $('payment-comment').value,
     spent_at: original && calendarDate(original.spent_at) === date ? original.spent_at : date + 'T00:00:00+05:00' };
   if (!original) body.user_id = $('payment-user').value.trim();
+  else {
+    body = paymentChanges(original, body);
+    if (!Object.keys(body).length) { showError('save-error', 'Нет изменений для сохранения.'); return; }
+    if (!Number.isSafeInteger(original.version) || original.version < 1) { showError('save-error', 'Обновите запись перед сохранением.'); $('reload-payment').hidden = false; return; }
+    body.expected_version = original.version;
+  }
   state.saving = true; $('save').disabled = true; $('save').textContent = 'Сохраняем…'; showError('save-error');
   try {
     await api(original ? '/v1/payments/' + original.id : '/v1/payments', { method: original ? 'PATCH' : 'POST', body: JSON.stringify(body) });
@@ -159,10 +172,24 @@ $('payment-form').addEventListener('submit', async event => {
     await Promise.all([loadPayments(), loadUsers()]);
   } catch (error) {
     state.saveUnknown = Boolean(error.unknownResult);
+    state.saveConflict = error.code === 'version_conflict';
+    $('reload-payment').hidden = !state.saveConflict;
     $('check-save').hidden = !state.saveUnknown;
     showError('save-error', error.message);
   }
-  finally { state.saving = false; $('save').disabled = state.saveUnknown; $('save').textContent = original ? 'Сохранить изменения' : 'Добавить расход'; }
+  finally { state.saving = false; $('save').disabled = state.saveUnknown || state.saveConflict; $('save').textContent = original ? 'Сохранить изменения' : 'Добавить расход'; }
+});
+
+$('reload-payment').addEventListener('click', async () => {
+  if (state.saving || !state.editing) return;
+  const id = state.editing.id;
+  state.saving = true; $('reload-payment').disabled = true;
+  try {
+    const latest = await api('/v1/payments/' + id);
+    openEditor(latest);
+    notify('Загружены актуальные значения. Введите изменения заново.');
+  } catch (error) { showError('save-error', error.message); }
+  finally { state.saving = false; $('reload-payment').disabled = false; }
 });
 
 function openDelete(payment) {

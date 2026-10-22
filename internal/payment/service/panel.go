@@ -45,6 +45,9 @@ func (s *Service) PatchPayment(ctx context.Context, id string, p model.UpdatePay
 
 // ValidateChanges is shared by HTTP updates and parsed Telegram intents.
 func ValidateChanges(p model.UpdatePayment) error {
+	if p.ExpectedVersion != nil && *p.ExpectedVersion < 1 {
+		return invalid("Версия записи должна быть положительной.")
+	}
 	if p.Amount == nil && p.Category == nil && p.Comment == nil && p.SpentAt == nil {
 		return invalid("Передайте хотя бы одно изменяемое поле.")
 	}
@@ -88,6 +91,10 @@ func (s *Service) ListPayments(ctx context.Context, f model.Filter) (model.Payme
 	return s.repo.ListPayments(ctx, f)
 }
 func (s *Service) ListUsers(ctx context.Context) ([]string, error) { return s.repo.ListUsers(ctx) }
+
+func (s *Service) ListUserProfiles(ctx context.Context) ([]model.User, error) {
+	return s.repo.ListUserProfiles(ctx)
+}
 
 // NormalizeUserID matches Telegram's decimal int64 representation.
 // This changes formatting, not the source of ownership.

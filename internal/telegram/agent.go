@@ -19,6 +19,7 @@ import (
 
 // Intent contains no owner field: ownership always comes from Telegram.
 type Intent struct {
+	profile *profileUpdate
 	// Internal dialog control cannot be supplied by the LLM JSON.
 	answer         string
 	cancelDialog   bool

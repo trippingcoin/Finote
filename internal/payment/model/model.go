@@ -1,8 +1,20 @@
 package model
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+var ErrConflict = errors.New("payment version conflict")
+
+type User struct {
+	ID          string `json:"id"`
+	DisplayName string `json:"display_name"`
+	Username    string `json:"username,omitempty"`
+}
 
 type Payment struct {
+	Version   int64     `json:"version"`
 	ID        string    `json:"id"`
 	UserID    string    `json:"user_id"`
 	Category  string    `json:"category"`
@@ -14,8 +26,9 @@ type Payment struct {
 }
 
 type UpdatePayment struct {
-	Category *string    `json:"category"`
-	Amount   *float64   `json:"amount"`
-	Comment  *string    `json:"comment"`
-	SpentAt  *time.Time `json:"spent_at"`
+	ExpectedVersion *int64     `json:"expected_version,omitempty"`
+	Category        *string    `json:"category"`
+	Amount          *float64   `json:"amount"`
+	Comment         *string    `json:"comment"`
+	SpentAt         *time.Time `json:"spent_at"`
 }

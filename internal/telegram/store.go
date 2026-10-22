@@ -22,6 +22,8 @@ type Store struct {
 
 const databaseTimeout = 5 * time.Second
 
+type profileUpdate struct{ DisplayName, Username string }
+
 func NewStore(db *sql.DB, location *time.Location) *Store { return &Store{db, location} }
 
 func (s *Store) Init(ctx context.Context) error {
@@ -74,6 +76,13 @@ func (s *Store) Process(ctx context.Context, bot string, update int64, user stri
 	// Serialize a user's conversation as well as individual update delivery.
 	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "dialog:"+bot+":"+user); err != nil {
 		return "", err
+	}
+	if i.profile != nil {
+		_, err = tx.ExecContext(ctx, `INSERT INTO users(id,display_name,username) VALUES($1,$2,$3)
+ ON CONFLICT(id) DO UPDATE SET display_name=EXCLUDED.display_name,username=EXCLUDED.username,updated_at=CURRENT_TIMESTAMP`, user, i.profile.DisplayName, i.profile.Username)
+		if err != nil {
+			return "", err
+		}
 	}
 	if i.cancelDialog {
 		err = clearDialog(ctx, tx, bot, user)

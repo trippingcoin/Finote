@@ -33,7 +33,9 @@ async function api(path, options = {}, timeoutMs = API_TIMEOUT_MS) {
     }
     if (!response.ok) {
       const unknown = mutation && (response.status >= 500 || response.status === 408);
-      throw requestError(unknown ? UNKNOWN_OUTCOME : (data?.error || 'Не удалось выполнить запрос.'), unknown);
+      const error = requestError(unknown ? UNKNOWN_OUTCOME : (data?.error || 'Не удалось выполнить запрос.'), unknown);
+      error.status = response.status; error.code = data?.code;
+      throw error;
     }
     // A missing/malformed success payload cannot confirm a saved expense.
     if (mutation && (!data || typeof data.id !== 'string')) throw requestError(UNKNOWN_OUTCOME, true);
@@ -49,4 +51,14 @@ async function api(path, options = {}, timeoutMs = API_TIMEOUT_MS) {
     clearTimeout(timer);
     external?.removeEventListener('abort', abort);
   }
+}
+
+// Compare against the original snapshot, not a subsequently refreshed list.
+function paymentChanges(original, values) {
+  const changes = {};
+  for (const key of ['amount', 'category', 'comment', 'spent_at']) {
+    const before = key === 'comment' ? (original.comment || '') : original[key];
+    if (values[key] !== before) changes[key] = values[key];
+  }
+  return changes;
 }
