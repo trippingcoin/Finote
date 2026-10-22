@@ -1,0 +1,5 @@
+simulation: telegram-context
+routing: path
+mocks:
+  - routeKey: llm
+    path: ../mocks/telegram-context/default.js

@@ -1,0 +1,5 @@
+simulation: panel-timeout
+routing: path
+mocks:
+  - routeKey: panel
+    path: ../mocks/panel-timeout/default.js

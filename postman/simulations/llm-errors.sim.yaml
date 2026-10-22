@@ -1,0 +1,5 @@
+simulation: llm-errors
+routing: path
+mocks:
+  - routeKey: llm
+    path: ../mocks/llm-errors/default.js

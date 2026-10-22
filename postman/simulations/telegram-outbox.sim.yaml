@@ -1,0 +1,5 @@
+simulation: telegram-outbox
+routing: path
+mocks:
+  - routeKey: telegram
+    path: ../mocks/telegram-outbox/default.js
