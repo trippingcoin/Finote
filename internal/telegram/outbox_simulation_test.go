@@ -15,13 +15,13 @@ func TestOutboxSimulation(t *testing.T) {
 	}
 	s := testStore(t)
 	addExpense(t, s, 1, "10")
-	b := &Bot{endpoint: base + "/error/", id: "123", client: &http.Client{Timeout: time.Second}, store: s}
+	b := newTestBot(s, base+"/error/", &http.Client{Timeout: time.Second}, nil)
 	if _, err := b.deliverNext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	assertStatus(t, s, 1, "pending")
 	makeDue(t, s)
-	b = &Bot{endpoint: base + "/ok/", id: "123", client: &http.Client{Timeout: time.Second}, store: NewStore(s.db, time.UTC)}
+	b = newTestBot(NewStore(s.db, time.UTC), base+"/ok/", &http.Client{Timeout: time.Second}, nil)
 	if _, err := b.deliverNext(context.Background()); err != nil {
 		t.Fatal(err)
 	}

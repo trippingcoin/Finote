@@ -1,65 +1,67 @@
-// Package migrations applies embedded, forward-only migrations at startup.
+// Package migrations runs embedded, forward-only migrations through Goose.
 package migrations
 
 import (
 	"context"
-	"crypto/sha256"
 	"database/sql"
 	"embed"
-	"errors"
 	"fmt"
 	"io/fs"
-	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/pressly/goose/v3"
+	"github.com/pressly/goose/v3/lock"
 )
 
-//go:embed *.sql
+//go:embed *.sql sql
 var files embed.FS
 
-func Apply(ctx context.Context, db *sql.DB) error { return apply(ctx, db, files) }
+const migrationLockID int64 = 732418590121
 
-func apply(ctx context.Context, db *sql.DB, source fs.FS) error {
-	names, err := fs.Glob(source, "*.sql")
+func Apply(ctx context.Context, db *sql.DB) error {
+	if err := importLegacyHistory(ctx, db); err != nil {
+		return fmt.Errorf("import legacy migration history: %w", err)
+	}
+	provider, err := newProvider(db)
 	if err != nil {
 		return err
 	}
-	sort.Strings(names)
-	tx, err := db.BeginTx(ctx, nil)
+	_, err = provider.Up(ctx)
+	return err
+}
+
+func newProvider(db *sql.DB) (*goose.Provider, error) {
+	// Preserve original SQL bytes and checksums. Goose, not this adapter, handles
+	// execution order, per-migration transactions, versioning and recovery.
+	names, err := fs.Glob(files, "*.sql")
 	if err != nil {
-		return err
+		return nil, err
 	}
-	defer tx.Rollback()
-	// Serialize startup of several application instances. Lock ends with transaction.
-	if _, err = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(732418590121)`); err != nil {
-		return err
-	}
-	if _, err = tx.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
- name TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
- )`); err != nil {
-		return err
-	}
+	legacy := make([]*goose.Migration, 0, len(names))
 	for _, name := range names {
-		body, err := fs.ReadFile(source, name)
+		prefix, _, _ := strings.Cut(name, "_")
+		version, err := strconv.ParseInt(prefix, 10, 64)
+		if err != nil || version < 1 || version > 5 {
+			return nil, fmt.Errorf("invalid legacy migration: %s", name)
+		}
+		body, err := files.ReadFile(name)
 		if err != nil {
+			return nil, err
+		}
+		legacy = append(legacy, goose.NewGoMigration(version, &goose.GoFunc{RunTx: func(ctx context.Context, tx *sql.Tx) error {
+			_, err := tx.ExecContext(ctx, string(body))
 			return err
-		}
-		checksum := fmt.Sprintf("%x", sha256.Sum256(body))
-		var saved string
-		err = tx.QueryRowContext(ctx, "SELECT checksum FROM schema_migrations WHERE name=$1", name).Scan(&saved)
-		if err == nil {
-			if saved != checksum {
-				return fmt.Errorf("migration %s changed after application", name)
-			}
-			continue
-		}
-		if !errors.Is(err, sql.ErrNoRows) {
-			return err
-		}
-		if _, err = tx.ExecContext(ctx, string(body)); err != nil {
-			return fmt.Errorf("migration %s: %w", name, err)
-		}
-		if _, err = tx.ExecContext(ctx, "INSERT INTO schema_migrations(name,checksum) VALUES($1,$2)", name, checksum); err != nil {
-			return err
-		}
+		}}, nil))
 	}
-	return tx.Commit()
+	source, err := fs.Sub(files, "sql")
+	if err != nil {
+		return nil, err
+	}
+	locker, err := lock.NewPostgresSessionLocker(lock.WithLockID(migrationLockID), lock.WithLockTimeout(1, 30))
+	if err != nil {
+		return nil, err
+	}
+	return goose.NewProvider(goose.DialectPostgres, db, source,
+		goose.WithGoMigrations(legacy...), goose.WithDisableGlobalRegistry(true), goose.WithSessionLocker(locker))
 }

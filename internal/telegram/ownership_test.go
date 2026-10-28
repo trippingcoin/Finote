@@ -6,6 +6,7 @@ import (
 	"errors"
 	"testing"
 
+	"finote/internal/assistant"
 	"finote/internal/payment/model"
 	"finote/internal/payment/repo"
 	"finote/internal/payment/service"
@@ -61,16 +62,16 @@ func TestAmbiguousDeleteCancelAndExpiry(t *testing.T) {
 			ctx := context.Background()
 			addExpense(t, s, 1, "10")
 			addExpense(t, s, 2, "10")
-			if _, err := s.Process(ctx, "123", 3, "10", Intent{Action: "delete", FilterCategory: "еда"}); err != nil {
+			if _, err := s.Process(ctx, "123", 3, "10", assistant.Request{Command: assistant.Command{Action: "delete", FilterCategory: "еда"}}); err != nil {
 				t.Fatal(err)
 			}
 			assertCount(t, s, "payments", 2)
-			if _, err := s.Process(ctx, "123", 4, "10", Intent{Action: "clarify", answer: "99"}); err != nil {
+			if _, err := s.Process(ctx, "123", 4, "10", assistant.Request{Command: assistant.Command{Action: "clarify"}, Answer: "99"}); err != nil {
 				t.Fatal(err)
 			}
 			assertCount(t, s, "payments", 2)
 			if mode == "cancel" {
-				if _, err := s.Process(ctx, "123", 5, "10", Intent{Action: "clarify", cancelDialog: true}); err != nil {
+				if _, err := s.Process(ctx, "123", 5, "10", assistant.Request{Command: assistant.Command{Action: "clarify"}, Cancel: true}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -79,7 +80,7 @@ func TestAmbiguousDeleteCancelAndExpiry(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if _, err := s.Process(ctx, "123", 6, "10", Intent{Action: "clarify", answer: "2"}); err != nil {
+			if _, err := s.Process(ctx, "123", 6, "10", assistant.Request{Command: assistant.Command{Action: "clarify"}, Answer: "2"}); err != nil {
 				t.Fatal(err)
 			}
 			want := 2

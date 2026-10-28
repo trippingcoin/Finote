@@ -9,8 +9,9 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
+	"finote/internal/assistant"
+	"finote/internal/migrations"
 	"finote/internal/payment/httpapi"
 	"finote/internal/payment/model"
 	"finote/internal/payment/repo"
@@ -47,7 +48,7 @@ func TestPanelConflictWithTelegramAndConcurrentEditors(t *testing.T) {
 		t.Fatal(status, string(raw), err)
 	}
 	amount := 500.0
-	if _, err := s.Process(ctx, "123", 1, "10", Intent{Action: "update", ID: p.ID, Amount: &amount}); err != nil {
+	if _, err := s.Process(ctx, "123", 1, "10", assistant.Request{Command: assistant.Command{Action: "update", ID: p.ID, Amount: &amount}}); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/payments/" + p.ID
@@ -135,7 +136,7 @@ func TestPanelConflictWithTelegramAndConcurrentEditors(t *testing.T) {
 
 func TestTelegramProfileStoredOnStartAndUpdated(t *testing.T) {
 	s := testStore(t)
-	b := &Bot{id: "123", store: s, location: time.UTC}
+	b := newTestBot(s, "", nil, nil)
 	update := func(n int64, name, username string) Update {
 		var u Update
 		raw := fmt.Sprintf(`{"update_id":%d,"message":{"text":"/start","from":{"id":10,"is_bot":false,"first_name":%q,"last_name":"Family","username":%q},"chat":{"id":10,"type":"private"}}}`, n, name, username)
@@ -165,7 +166,7 @@ func TestTelegramProfileStoredOnStartAndUpdated(t *testing.T) {
 	}
 	forged := update(3, "Wrong", "wrong")
 	forged.Message.Chat.ID = 20
-	if _, err = b.prepareReply(context.Background(), "10", forged); err != nil {
+	if err = b.handleUpdate(context.Background(), "10", forged); err != nil {
 		t.Fatal(err)
 	}
 	users, _ = repo.New(s.db).ListUserProfiles(context.Background())
@@ -176,14 +177,14 @@ func TestTelegramProfileStoredOnStartAndUpdated(t *testing.T) {
 	if _, err = s.db.Exec("ALTER TABLE telegram_outbox ADD CONSTRAINT reject_five CHECK(update_id<>5)"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = b.prepareReply(context.Background(), "10", update(5, "rollback", "")); err == nil {
+	if err = b.handleUpdate(context.Background(), "10", update(5, "rollback", "")); err == nil {
 		t.Fatal("expected rollback")
 	}
 	users, _ = repo.New(s.db).ListUserProfiles(context.Background())
 	if users[0].DisplayName != "Новое имя Family" {
 		t.Fatal(users)
 	}
-	if err = s.Init(context.Background()); err != nil {
+	if err = migrations.Apply(context.Background(), s.db); err != nil {
 		t.Fatal("migration rerun", err)
 	}
 }

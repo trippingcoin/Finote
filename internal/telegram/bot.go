@@ -1,126 +1,43 @@
+// Package telegram adapts Telegram updates to the assistant and delivers its replies.
 package telegram
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"finote/internal/assistant"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
-type Update struct {
-	ID      int64    `json:"update_id"`
-	Message *Message `json:"message"`
-}
-type Message struct {
-	Text string `json:"text"`
-	From *struct {
-		ID        int64  `json:"id"`
-		IsBot     bool   `json:"is_bot"`
-		FirstName string `json:"first_name"`
-		LastName  string `json:"last_name"`
-		Username  string `json:"username"`
-	} `json:"from"`
-	Chat struct {
-		ID   int64  `json:"id"`
-		Type string `json:"type"`
-	} `json:"chat"`
-}
-
 type Bot struct {
-	endpoint, id string
-	client       *http.Client
-	planner      Planner
-	store        botStore
-	location     *time.Location
+	id        string
+	api       *client
+	assistant *assistant.Service
+	store     deliveryStore
 }
 
-type botStore interface {
-	Init(context.Context) error
-	Receipt(context.Context, string, int64) (string, bool, error)
-	HasDialog(context.Context, string, string) (bool, error)
-	Process(context.Context, string, int64, string, Intent) (string, error)
-	QueueReply(context.Context, string, int64, int64, string) error
-	NextReply(context.Context, string) (outgoingReply, bool, error)
-	FinishReply(context.Context, string, outgoingReply, string, time.Duration, string) error
+type deliveryStore interface {
+	NextReply(context.Context, string) (assistant.OutgoingReply, bool, error)
+	FinishReply(context.Context, string, assistant.OutgoingReply, string, time.Duration, string) error
 }
 
-func NewBot(token string, planner Planner, store *Store, location *time.Location) (*Bot, error) {
-	id, _, ok := strings.Cut(token, ":")
-	if _, err := strconv.ParseInt(id, 10, 64); !ok || err != nil {
+func NewBot(token string, handler *assistant.Service, delivery deliveryStore) (*Bot, error) {
+	id, secret, ok := strings.Cut(token, ":")
+	number, err := strconv.ParseInt(id, 10, 64)
+	if !ok || err != nil || number <= 0 || secret == "" {
 		return nil, errors.New("invalid TELEGRAM_BOT_TOKEN")
 	}
-	return &Bot{"https://api.telegram.org/bot" + token + "/", id, &http.Client{Timeout: 40 * time.Second}, planner, store, location}, nil
-}
-
-type apiError struct{ Code, RetryAfter int }
-
-var errWebhookConfigured = errors.New("Telegram webhook is configured; remove it before using polling")
-
-func (e apiError) Error() string { return fmt.Sprintf("Telegram API error %d", e.Code) }
-
-// Never return request URLs: Telegram includes the secret token in the URL.
-func (b *Bot) call(ctx context.Context, method string, payload any, target any) error {
-	timeout := 10 * time.Second
-	if method == "getUpdates" {
-		timeout = 35 * time.Second // Telegram long-polls for 25 seconds.
-	}
-	ctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, b.endpoint+method, bytes.NewReader(data))
-	if err != nil {
-		return errors.New("invalid Telegram endpoint")
-	}
-	req.Header.Set("Content-Type", "application/json")
-	response, err := b.client.Do(req)
-	if err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("Telegram request interrupted: %w", ctx.Err())
-		}
-		return errors.New("Telegram connection failed")
-	}
-	defer response.Body.Close()
-	var envelope struct {
-		OK         bool            `json:"ok"`
-		ErrorCode  int             `json:"error_code"`
-		Result     json.RawMessage `json:"result"`
-		Parameters struct {
-			RetryAfter int `json:"retry_after"`
-		} `json:"parameters"`
-	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 4<<20)).Decode(&envelope); err != nil {
-		if response.StatusCode != http.StatusOK {
-			return apiError{Code: response.StatusCode}
-		}
-		return errors.New("invalid Telegram response")
-	}
-	if response.StatusCode != http.StatusOK {
-		return apiError{Code: response.StatusCode, RetryAfter: envelope.Parameters.RetryAfter}
-	}
-	if !envelope.OK {
-		return apiError{Code: envelope.ErrorCode, RetryAfter: envelope.Parameters.RetryAfter}
-	}
-	if target != nil {
-		return json.Unmarshal(envelope.Result, target)
-	}
-	return nil
+	return &Bot{id: id, api: newClient(token, "https://api.telegram.org", nil), assistant: handler, store: delivery}, nil
 }
 
 func (b *Bot) Run(ctx context.Context) error {
-	if err := b.store.Init(ctx); err != nil {
-		return err
-	}
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	results := make(chan error, 2)
@@ -137,10 +54,8 @@ func (b *Bot) Run(ctx context.Context) error {
 
 func (b *Bot) poll(ctx context.Context) error {
 	// Do not silently delete an existing webhook.
-	var webhook struct {
-		URL string `json:"url"`
-	}
-	if err := b.call(ctx, "getWebhookInfo", struct{}{}, &webhook); err != nil {
+	webhook, err := b.api.webhook(ctx)
+	if err != nil {
 		return err
 	}
 	if webhook.URL != "" {
@@ -148,10 +63,9 @@ func (b *Bot) poll(ctx context.Context) error {
 	}
 	// Only acknowledge a complete batch. MAX(receipt) is unsafe when users
 	// finish out of order; after restart Telegram replays unacknowledged updates.
-	var offset int64
+	var offset int
 	for ctx.Err() == nil {
-		var updates []Update
-		err := b.call(ctx, "getUpdates", map[string]any{"offset": offset, "timeout": 25, "allowed_updates": []string{"message"}}, &updates)
+		updates, err := b.api.updates(ctx, offset)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
@@ -172,8 +86,8 @@ func (b *Bot) poll(ctx context.Context) error {
 			return err // no acknowledgement: receipts make replay safe
 		}
 		for _, u := range updates {
-			if u.ID >= offset {
-				offset = u.ID + 1
+			if u.UpdateID >= offset {
+				offset = u.UpdateID + 1
 			}
 		}
 	}
@@ -182,8 +96,8 @@ func (b *Bot) poll(ctx context.Context) error {
 
 // Different users can progress concurrently; a user's messages stay ordered.
 // Bound concurrency without acknowledging work that exists only in memory.
-func (b *Bot) processBatch(ctx context.Context, updates []Update) error {
-	groups := make(map[string][]Update)
+func (b *Bot) processBatch(ctx context.Context, updates []tgbotapi.Update) error {
+	groups := make(map[string][]tgbotapi.Update)
 	for _, u := range updates {
 		if user, ok := owner(u.Message); ok {
 			groups[user] = append(groups[user], u)
@@ -220,60 +134,33 @@ func (b *Bot) processBatch(ctx context.Context, updates []Update) error {
 	return result
 }
 
-func (b *Bot) handleUpdate(ctx context.Context, user string, u Update) error {
-	reply, found, err := b.store.Receipt(ctx, b.id, u.ID)
-	if err == nil {
-		if found {
-			err = b.store.QueueReply(ctx, b.id, u.ID, u.Message.Chat.ID, reply)
-		} else {
-			_, err = b.prepareReply(ctx, user, u)
-		}
+func (b *Bot) handleUpdate(ctx context.Context, user string, u tgbotapi.Update) error {
+	verified, ok := owner(u.Message)
+	if !ok || verified != user {
+		return nil
 	}
+	profile := &assistant.Profile{
+		DisplayName: truncate(strings.Join(strings.Fields(u.Message.From.FirstName+" "+u.Message.From.LastName), " "), 128),
+		Username:    truncate(u.Message.From.UserName, 64),
+	}
+	_, err := b.assistant.Handle(ctx, assistant.Update{BotID: b.id, ID: int64(u.UpdateID), UserID: user, Profile: profile}, u.Message.Text)
 	if err != nil {
-		slog.ErrorContext(ctx, "Telegram expense operation failed", "update_id", u.ID, "error", err)
-		// Keep the update unacknowledged. A retry checks its receipt before LLM.
-		return fmt.Errorf("Telegram storage operation: %w", err)
+		return fmt.Errorf("Telegram expense operation: %w", err)
 	}
-	return nil // reply and mutation are durable; delivery is independent
+	return nil
 }
 
-func (b *Bot) prepareReply(ctx context.Context, user string, u Update) (string, error) {
-	text := strings.TrimSpace(u.Message.Text)
-	intent := Intent{Action: "clarify", Question: "Напишите расход, например «кофе 350», или попросите показать, изменить либо удалить свои траты."}
-	cancelDialog, newRequest := dialogControl(text)
-	pending, err := b.store.HasDialog(ctx, b.id, user)
-	if err != nil {
-		return "", err
-	}
-	if cancelDialog || newRequest {
-		intent.cancelDialog = true
-		if cancelDialog {
-			intent.Question = "Уточнение отменено. Ничего не изменено."
-		}
-	} else if pending && text != "" {
-		intent.answer = text
-	} else if local, ok := referenceCommand(text); ok {
-		intent = local
-	} else if text != "" {
-		planCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		parsed, err := b.planner.Plan(planCtx, text, time.Now().In(b.location))
-		cancel()
-		if err != nil {
-			slog.WarnContext(ctx, "Telegram: failed to parse expense request", "error", err, "update_id", u.ID)
-			intent.Question = plannerErrorReply(err)
-		} else {
-			intent = parsed
-		}
-	}
-	if verified, ok := owner(u.Message); ok && verified == user {
-		intent.profile = &profileUpdate{DisplayName: trim(strings.Join(strings.Fields(u.Message.From.FirstName+" "+u.Message.From.LastName), " "), 128), Username: trim(u.Message.From.Username, 64)}
-	}
-	return b.store.Process(ctx, b.id, u.ID, user, intent)
-}
-
-func owner(m *Message) (string, bool) {
-	if m == nil || m.From == nil || m.From.IsBot || m.From.ID <= 0 || m.Chat.Type != "private" || m.Chat.ID != m.From.ID {
+func owner(m *tgbotapi.Message) (string, bool) {
+	if m == nil || m.From == nil || m.Chat == nil || m.From.IsBot || m.From.ID <= 0 || m.Chat.Type != "private" || m.Chat.ID != m.From.ID {
 		return "", false
 	}
 	return strconv.FormatInt(m.From.ID, 10), true
+}
+
+func truncate(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) > limit {
+		return string(runes[:limit]) + "…"
+	}
+	return text
 }

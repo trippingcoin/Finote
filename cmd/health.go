@@ -3,11 +3,15 @@ package main
 import (
 	"context"
 	"database/sql"
-	"finote/config"
-	"finote/internal/telegram"
 	"fmt"
 	"net/http"
 	"time"
+
+	"finote/config"
+	"finote/internal/assistant"
+	"finote/internal/llm"
+	"finote/internal/storage/postgres"
+	"finote/internal/telegram"
 )
 
 type pinger interface{ PingContext(context.Context) error }
@@ -41,9 +45,10 @@ func configureBot(cfg config.Config, db *sql.DB) (*telegram.Bot, error) {
 	if err != nil {
 		return nil, fmt.Errorf("telegram timezone: %w", err)
 	}
-	agent, err := telegram.NewAgent(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
+	agent, err := llm.New(cfg.LLM.BaseURL, cfg.LLM.APIKey, cfg.LLM.Model)
 	if err != nil {
 		return nil, fmt.Errorf("initialize LLM agent: %w", err)
 	}
-	return telegram.NewBot(cfg.Telegram.Token, agent, telegram.NewStore(db, loc), loc)
+	store := postgres.New(db)
+	return telegram.NewBot(cfg.Telegram.Token, assistant.New(agent, store, loc), store)
 }

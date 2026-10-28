@@ -3,21 +3,27 @@ package telegram
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"finote/internal/assistant"
+	"finote/internal/migrations"
 	"finote/internal/payment/httpapi"
 	"finote/internal/payment/repo"
 	"finote/internal/payment/service"
+	"finote/internal/storage/postgres"
+
+	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	_ "github.com/lib/pq"
 )
 
@@ -50,7 +56,7 @@ func testStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { db.Close() })
 	s := NewStore(db, time.UTC)
-	if err = s.Init(context.Background()); err != nil {
+	if err = migrations.Apply(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	return s
@@ -59,7 +65,7 @@ func testStore(t *testing.T) *Store {
 func addExpense(t *testing.T, s *Store, update int64, user string) {
 	t.Helper()
 	a, c := 400.0, "еда"
-	if _, err := s.Process(context.Background(), "123", update, user, Intent{Action: "create", Amount: &a, Category: &c}); err != nil {
+	if _, err := s.Process(context.Background(), "123", update, user, assistant.Request{Command: assistant.Command{Action: "create", Amount: &a, Category: &c}}); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -92,7 +98,7 @@ func TestOutboxAtomicDeduplication(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			a, c := 400.0, "еда"
-			_, err := s.Process(context.Background(), "123", 1, "10", Intent{Action: "create", Amount: &a, Category: &c})
+			_, err := s.Process(context.Background(), "123", 1, "10", assistant.Request{Command: assistant.Command{Action: "create", Amount: &a, Category: &c}})
 			errs <- err
 		}()
 	}
@@ -111,7 +117,7 @@ func TestOutboxAtomicDeduplication(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, c := 500.0, "еда"
-	if _, err := s.Process(context.Background(), "123", 2, "10", Intent{Action: "create", Amount: &a, Category: &c}); err == nil {
+	if _, err := s.Process(context.Background(), "123", 2, "10", assistant.Request{Command: assistant.Command{Action: "create", Amount: &a, Category: &c}}); err == nil {
 		t.Fatal("expected outbox insert error")
 	}
 	assertCount(t, s, "payments", 1)
@@ -131,7 +137,7 @@ func TestDeliveryRecoveryAfterRestart(t *testing.T) {
 		fmt.Fprint(w, `{"ok":true,"result":{"message_id":1}}`)
 	}))
 	defer server.Close()
-	b := &Bot{endpoint: server.URL + "/", id: "123", client: server.Client(), store: s}
+	b := newTestBot(s, server.URL+"/", server.Client(), nil)
 	if _, err := b.deliverNext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -143,7 +149,7 @@ func TestDeliveryRecoveryAfterRestart(t *testing.T) {
 	// Recreate both delivery objects, keeping only the durable database.
 	fail.Store(false)
 	makeDue(t, s)
-	restarted := &Bot{endpoint: server.URL + "/", id: "123", client: server.Client(), store: NewStore(s.db, time.UTC)}
+	restarted := newTestBot(NewStore(s.db, time.UTC), server.URL+"/", server.Client(), nil)
 	if _, err := restarted.deliverNext(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -197,7 +203,7 @@ func TestPermanentDeliveryFailureAndRetryAfter(t *testing.T) {
 				fmt.Fprintf(w, `{"ok":false,"error_code":%d,"parameters":{"retry_after":60}}`, code)
 			}))
 			defer server.Close()
-			b := &Bot{endpoint: server.URL + "/", id: "123", client: server.Client(), store: s}
+			b := newTestBot(s, server.URL+"/", server.Client(), nil)
 			_, err := b.deliverNext(context.Background())
 			if critical(err) != (code == 401) {
 				t.Fatalf("critical=%v code=%d", err, code)
@@ -223,7 +229,7 @@ func TestTelegramFailureDoesNotStopPanel(t *testing.T) {
 		fmt.Fprint(w, `{"ok":false,"error_code":401}`)
 	}))
 	defer telegramServer.Close()
-	b := &Bot{endpoint: telegramServer.URL + "/", id: "123", client: telegramServer.Client(), store: s}
+	b := newTestBot(s, telegramServer.URL+"/", telegramServer.Client(), nil)
 	panel := httptest.NewServer(httpapi.New(service.New(repo.New(s.db))))
 	defer panel.Close()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -274,20 +280,18 @@ func TestPollingAcknowledgesDurableReplyDespiteDelivery503(t *testing.T) {
 	var once sync.Once
 	var acknowledged atomic.Bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
+		switch strings.TrimPrefix(r.URL.Path, "/bot123:test") {
 		case "/getWebhookInfo":
 			fmt.Fprint(w, `{"ok":true,"result":{"url":""}}`)
 		case "/getUpdates":
-			var req struct {
-				Offset int64 `json:"offset"`
-			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			if err := r.ParseForm(); err != nil {
 				t.Error(err)
 			}
-			if req.Offset == 0 {
+			offset, _ := strconv.Atoi(r.Form.Get("offset"))
+			if offset == 0 {
 				fmt.Fprint(w, `{"ok":true,"result":[{"update_id":1,"message":{"text":"/start","from":{"id":10},"chat":{"id":10,"type":"private"}}}]}`)
 			} else {
-				acknowledged.Store(req.Offset == 2)
+				acknowledged.Store(offset == 2)
 				select {
 				case <-delivered:
 				case <-r.Context().Done():
@@ -304,11 +308,91 @@ func TestPollingAcknowledgesDurableReplyDespiteDelivery503(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	b := &Bot{endpoint: server.URL + "/", id: "123", client: server.Client(), store: s, location: time.UTC}
+	b := newTestBot(s, server.URL+"/", server.Client(), nil)
 	_ = b.Run(ctx)
 	if !acknowledged.Load() {
 		t.Fatal("polling blocked on delivery")
 	}
 	assertStatus(t, s, 1, "pending")
 	assertCount(t, s, "telegram_updates", 1)
+}
+
+// Test harness keeps database assertions beside end-to-end behavior tests.
+type Store struct {
+	*postgres.Store
+	db       *sql.DB
+	location *time.Location
+}
+
+func NewStore(db *sql.DB, loc *time.Location) *Store {
+	return &Store{Store: postgres.New(db), db: db, location: loc}
+}
+func (s *Store) Process(ctx context.Context, bot string, id int64, user string, r assistant.Request) (string, error) {
+	return assistant.New(nil, s, s.location).Process(ctx, assistant.Update{BotID: bot, UserID: user, ID: id}, r)
+}
+
+type Update = tgbotapi.Update
+type Message = tgbotapi.Message
+
+func newTestBot(s *Store, base string, httpClient *http.Client, planner assistant.Planner) *Bot {
+	return &Bot{id: "123", api: newClient("123:test", strings.TrimRight(base, "/"), httpClient), assistant: assistant.New(planner, s, s.location), store: s}
+}
+
+func TestPollingDoesNotAcknowledgeFailedTransaction(t *testing.T) {
+	s := testStore(t)
+	if _, err := s.db.Exec("ALTER TABLE telegram_outbox ADD CONSTRAINT reject_update CHECK(update_id<>1)"); err != nil {
+		t.Fatal(err)
+	}
+	var polls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch strings.TrimPrefix(r.URL.Path, "/bot123:test") {
+		case "/getWebhookInfo":
+			fmt.Fprint(w, `{"ok":true,"result":{"url":""}}`)
+		case "/getUpdates":
+			polls.Add(1)
+			fmt.Fprint(w, `{"ok":true,"result":[{"update_id":1,"message":{"text":"/start","from":{"id":10},"chat":{"id":10,"type":"private"}}}]}`)
+		default:
+			w.WriteHeader(501)
+		}
+	}))
+	defer server.Close()
+	bot := newTestBot(s, server.URL, server.Client(), nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := bot.poll(ctx); err == nil {
+		t.Fatal("storage failure must leave the batch unacknowledged")
+	}
+	if polls.Load() != 1 {
+		t.Fatal("polling advanced after a failed transaction")
+	}
+	assertCount(t, s, "telegram_updates", 0)
+	assertCount(t, s, "telegram_outbox", 0)
+	assertCount(t, s, "users", 0)
+}
+
+func TestAssistantTransactionDeadlineRollsBack(t *testing.T) {
+	s := testStore(t)
+	lock, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer lock.Rollback()
+	if _, err = lock.Exec("LOCK TABLE payments IN ACCESS EXCLUSIVE MODE"); err != nil {
+		t.Fatal(err)
+	}
+	amount, category := 400.0, "еда"
+	started := time.Now()
+	_, err = s.Process(context.Background(), "123", 1, "10", assistant.Request{Command: assistant.Command{Action: "create", Amount: &amount, Category: &category}})
+	if err == nil {
+		t.Fatal("locked database must time out")
+	}
+	if time.Since(started) > 7*time.Second {
+		t.Fatal("transaction callback ignored the storage deadline")
+	}
+	if err = lock.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	assertCount(t, s, "payments", 0)
+	assertCount(t, s, "telegram_updates", 0)
+	assertCount(t, s, "telegram_outbox", 0)
 }
